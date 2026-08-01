@@ -13,6 +13,7 @@
   --red:#EF4444; --red-bg:#3B1416; --red-bd:#EF4444; --red-fg:#FF8A8A;
   --grn:#22C55E; --grn-bg:#14401F; --grn-bd:#1E6B33; --grn-fg:#5FE87C;
   --amb:#F59E0B; --amb-bg:#3A2A0B; --amb-bd:#A9741A; --amb-fg:#FFC04D;
+  --gry-bg:#262626; --gry-bd:#454545;
   --banner:#B32222;
 
   --sans:'Inter',system-ui,sans-serif; --mono:'IBM Plex Mono',monospace;
@@ -20,8 +21,8 @@
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);
   -webkit-font-smoothing:antialiased}
+a{color:inherit}
 
-/* ---------- top bar ---------- */
 header{display:flex;align-items:center;gap:20px;padding:14px 26px;
   border-bottom:1px solid var(--line);position:sticky;top:0;z-index:30;
   background:rgba(26,26,26,.95);backdrop-filter:blur(8px);flex-wrap:wrap}
@@ -62,10 +63,8 @@ aside{border-right:1px solid var(--line);overflow-y:auto;height:calc(100vh - 52p
 
 section{padding:26px 34px 60px;overflow-y:auto;height:calc(100vh - 52px)}
 
-/* ---------- incident banner ---------- */
 .banner{display:flex;align-items:center;gap:16px;background:var(--banner);
-  border-radius:8px;padding:16px 22px;margin-bottom:34px;
-  animation:slide .4s ease both}
+  border-radius:8px;padding:16px 22px;margin-bottom:34px;animation:slide .4s ease both}
 @keyframes slide{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
 .banner .warn{font-size:20px;line-height:1}
 .banner h2{margin:0 0 3px;font-size:16px;font-weight:600;color:#FFD9D9}
@@ -73,19 +72,16 @@ section{padding:26px 34px 60px;overflow-y:auto;height:calc(100vh - 52px)}
 .banner .big{margin-left:auto;font-family:var(--mono);font-size:26px;font-weight:600;
   color:#FFE3E3;white-space:nowrap}
 
-/* ---------- headline metric ---------- */
 .headline{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;margin-bottom:6px}
 .headline .k{font-size:14px;color:var(--muted);width:100%;margin-bottom:2px}
 .headline .v{font-family:var(--mono);font-size:40px;font-weight:600;letter-spacing:-1px}
 .headline .d{font-family:var(--mono);font-size:14px}
 .headline .exp{margin-left:auto;font-family:var(--mono);font-size:13px;color:var(--muted)}
-.chev{display:block;margin:14px auto 18px;color:var(--dim);font-size:15px;text-align:center}
+.chev{margin:14px auto 18px;color:var(--dim);font-size:15px;text-align:center}
 
-/* ---------- metric tree ---------- */
 .tree{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
   gap:14px;margin-bottom:30px}
-.mcard{border-radius:8px;padding:15px 18px;border:1.5px solid;
-  animation:rise .35s ease both}
+.mcard{border-radius:8px;padding:15px 18px;border:1.5px solid;animation:rise .35s ease both}
 .mcard:nth-child(2){animation-delay:.05s}.mcard:nth-child(3){animation-delay:.1s}
 .mcard:nth-child(4){animation-delay:.15s}.mcard:nth-child(5){animation-delay:.2s}
 @keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
@@ -95,21 +91,26 @@ section{padding:26px 34px 60px;overflow-y:auto;height:calc(100vh - 52px)}
 .mcard.r .k{color:var(--red-fg)}.mcard.r .v{color:#fff}.mcard.r .s{color:var(--red-fg)}
 .mcard.a{background:var(--amb-bg);border-color:var(--amb-bd)}
 .mcard.a .k,.mcard.a .v,.mcard.a .s{color:var(--amb-fg)}
+.mcard.n{background:var(--gry-bg);border-color:var(--gry-bd)}
+.mcard.n .k,.mcard.n .v,.mcard.n .s{color:var(--muted)}
 .mcard .k{font-size:13px;margin-bottom:7px}
 .mcard .v{font-family:var(--mono);font-size:23px;font-weight:600;letter-spacing:-.5px}
 .mcard .s{font-family:var(--mono);font-size:11px;margin-top:7px;opacity:.9}
 
-/* ---------- diagnosis ---------- */
 .diag{background:var(--card);border-radius:10px;padding:22px 24px;margin-bottom:28px}
-.diag .lab{font-size:12px;color:var(--muted);margin-bottom:10px}
+.diag .lab{font-size:12px;color:var(--muted);margin-bottom:10px;
+  display:flex;align-items:center;gap:10px}
+.diag .lab em{font-style:normal;font-family:var(--mono);font-size:9.5px;
+  letter-spacing:.08em;text-transform:uppercase;color:var(--dim);
+  border:1px solid var(--line);padding:1px 6px;border-radius:3px}
 .diag .body{font-size:16.5px;line-height:1.6;font-weight:500}
+.diag .body.thin{color:var(--muted);font-weight:400;font-size:15px}
 .diag .body .raw{display:block;margin-top:12px;font-family:var(--mono);font-size:11.5px;
   color:var(--dim);line-height:1.55;font-weight:400}
-.diag .foot{display:flex;gap:26px;flex-wrap:wrap;margin-top:16px;
+.diag .foot{display:flex;gap:24px;flex-wrap:wrap;margin-top:16px;
   font-family:var(--mono);font-size:11.5px;color:var(--muted)}
-.diag .foot span{display:flex;align-items:center;gap:6px}
+.diag .foot a{color:var(--amb-fg);text-decoration:none;border-bottom:1px dotted}
 
-/* ---------- localisation ---------- */
 .loc-h{display:flex;align-items:center;gap:12px;font-size:12px;color:var(--muted);
   padding-bottom:11px;border-bottom:1px solid var(--line);margin-bottom:4px}
 .loc-h .right{margin-left:auto;font-family:var(--mono);font-size:11.5px}
@@ -119,11 +120,12 @@ section{padding:26px 34px 60px;overflow-y:auto;height:calc(100vh - 52px)}
 .loc .dim{font-size:11px;color:var(--dim);font-family:var(--mono)}
 .loc .nums{margin-left:auto;font-family:var(--mono);font-size:13px;color:var(--muted)}
 .loc .nums b{color:var(--red);font-weight:500}
+.loc.ruled .nums b{color:var(--grn-fg)}
 .loc .why{width:100%;font-size:12.5px;color:var(--muted);line-height:1.5;padding-top:2px}
 .loc .bar{width:100%;height:3px;background:var(--line);border-radius:2px;overflow:hidden}
 .loc .bar i{display:block;height:100%;background:var(--red);transition:width .5s}
+.loc.ruled .bar i{background:var(--grn-bd)}
 
-/* ---------- health ---------- */
 .health{margin-top:38px;border-top:1px solid var(--line);padding-top:22px}
 .health h3{font-family:var(--mono);font-size:10px;letter-spacing:.14em;
   text-transform:uppercase;color:var(--dim);font-weight:500;margin:0 0 14px}
@@ -160,17 +162,17 @@ td.s-success{color:var(--grn-fg)}td.s-failure{color:var(--red-fg)}
 <body>
 
 <header>
-  <div class="brand"><i></i>RCA &middot; incident view</div>
+  <div class="brand"><i></i>RCA &middot; ledger</div>
   <div class="toggle on" id="tog" onclick="flip()"><div class="switch"></div>Plain English</div>
   <div class="meta" id="pulse">connecting&hellip;</div>
 </header>
 
 <main>
   <aside>
-    <div class="rail-h">Incidents</div>
+    <div class="rail-h">Investigations</div>
     <div id="runlist"><div class="empty">loading&hellip;</div></div>
   </aside>
-  <section id="detail"><div class="empty">Pick an incident.<br>New batches appear on their own.</div></section>
+  <section id="detail"><div class="empty">Pick an investigation.<br>New ones appear on their own.</div></section>
 </main>
 
 <div id="toast"></div>
@@ -187,27 +189,34 @@ const auto = n => Math.abs(n) >= 1000 ? num(n, 0)
   : num(n, 4).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
 const pct = (a, b) => (b ? ((a - b) / Math.abs(b)) * 100 : 0);
 const isMoney = m => /revenue|ecpm|cpm|spend|cost|price/i.test(m || '');
+const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
 function toast(m){ const t=$('#toast'); t.innerHTML=m; t.classList.add('show');
   setTimeout(()=>t.classList.remove('show'), 5000); }
 
-/* severity: green = normal, red = the driver, amber = anomaly but minor */
+/* the four ledger verdicts */
 function sev(s){
-  if(s.verdict !== 'anomaly') return 'g';
-  return Math.abs(s.contrib || 0) >= 50 ? 'r' : 'a';
+  if(s.verdict === 'anomaly') return Math.abs(s.contrib || 0) >= 50 ? 'r' : 'a';
+  if(s.verdict === 'insufficient_volume') return 'n';
+  return 'g';                       // normal | ruled_out
 }
-const SEVWORD = {g:'normal', a:'watch', r:'driver'};
+const SEVWORD = {anomaly:'driver', normal:'normal',
+                 ruled_out:'ruled out', insufficient_volume:'low volume'};
+function word(s){
+  if(s.verdict === 'anomaly' && Math.abs(s.contrib||0) < 50) return 'watch';
+  return SEVWORD[s.verdict] || s.verdict;
+}
 
 async function pulse(){
   try{
     const p = await (await fetch('/api/pulse')).json();
     if(p.error) throw new Error(p.error);
     $('#pulse').innerHTML = `rows <b>${p.total_rows}</b>`
-      + `<span>incidents <b>${p.runs}</b></span>`
-      + `<span>batches <b>${p.batches}</b></span>`
-      + `<span>last load <b>${p.latest}</b></span>`;
+      + `<span>investigations <b>${p.runs}</b></span>`
+      + `<span>traces <b>${p.traces}</b></span>`
+      + `<span>last write <b>${p.latest}</b></span>`;
     if(FP && p.fingerprint !== FP){
-      toast(`<b>New batch landed.</b><br>${p.total_rows} rows &middot; ${p.runs} incidents`);
+      toast(`<b>New investigation written.</b><br>${p.total_rows} rows &middot; ${p.runs} runs`);
       await loadRuns(true);
     }
     FP = p.fingerprint;
@@ -216,86 +225,91 @@ async function pulse(){
 
 async function loadRuns(highlight){
   const r = await (await fetch('/api/runs')).json();
-  if(r.error){ $('#runlist').innerHTML = `<div class="err">${r.error}</div>`; return; }
+  if(r.error){ $('#runlist').innerHTML = `<div class="err">${esc(r.error)}</div>`; return; }
   const seen = new Set([...document.querySelectorAll('.run')].map(e=>e.dataset.id));
   $('#runlist').innerHTML = r.runs.map(x=>{
     const anom = x.anomaly_steps > 0;
     const fresh = highlight && !seen.has(x.run_id) ? ' fresh' : '';
     return `<div class="run${fresh}${x.run_id===ACTIVE?' active':''}" data-id="${x.run_id}"
              onclick="openRun('${x.run_id}')">
-      <div class="t">${x.headline_metric || 'metric'} anomaly &middot; ${x.headline_segment || 'global'}</div>
+      <div class="t">${esc(x.headline_metric || 'metric')} &middot; ${esc(x.headline_segment || 'global')}</div>
       <div class="s"><span class="pill ${anom?'r':'g'}">${anom?x.anomaly_steps+' flagged':'clean'}</span>
-        ${String(x.window_start).slice(0,10)} &middot; ${x.steps} steps</div>
+        ${String(x.incident_start).slice(0,10)} &middot; ${x.steps} steps</div>
     </div>`;
-  }).join('') || '<div class="empty">No incidents yet.<br>Load a batch.</div>';
+  }).join('') || '<div class="empty">Ledger is empty.<br>Run an investigation.</div>';
   if(FIRST && r.runs.length){ FIRST = false; openRun(r.runs[0].run_id); }
 }
 
 async function openRun(id){
   ACTIVE = id;
   document.querySelectorAll('.run').forEach(e=>e.classList.toggle('active', e.dataset.id===id));
-  $('#detail').innerHTML = '<div class="empty">diagnosing&hellip;</div>';
+  $('#detail').innerHTML = '<div class="empty">reading ledger&hellip;</div>';
   const d = await (await fetch(`/api/run/${id}?plain=${PLAIN}`)).json();
-  if(d.error){ $('#detail').innerHTML = `<div class="err">${d.error}</div>`; return; }
+  if(d.error){ $('#detail').innerHTML = `<div class="err">${esc(d.error)}</div>`; return; }
   render(d); health();
 }
 
 function render(d){
-  const S = d.steps;
-  const head   = S.find(s=>s.step_type==='detection') || S[0];
-  const final  = S.find(s=>s.step_type==='final') || S[S.length-1];
-  const global = S.filter(s=>s!==head && s!==final &&
-                   (s.dimension==='global' || s.dim_value==='all'));
-  const local  = S.filter(s=>s!==head && s!==final && !global.includes(s));
+  const S = d.steps, H = d.header;
+  const head  = S.find(s=>s.step_type==='detection') || S[0];
+  const final = S.find(s=>s.step_type==='final') || S[S.length-1];
+  const tree  = S.filter(s=>s!==head && s!==final &&
+                  ['decomposition','ruleout'].includes(s.step_type));
+  const local = S.filter(s=>s.step_type==='localization');
 
-  const driver = [...global, ...local].filter(s=>s.verdict==='anomaly')
-                   .sort((a,b)=>Math.abs(b.contrib||0)-Math.abs(a.contrib||0))[0] || head;
-  const hPct = pct(head.actual, head.baseline);
+  const driver = S.filter(s=>s.verdict==='anomaly' && s!==head)
+                  .sort((a,b)=>Math.abs(b.contrib||0)-Math.abs(a.contrib||0))[0] || head;
+  const hPct = pct(head.observed, head.expected);
   const hFmt = isMoney(head.metric) ? money : auto;
   const days = Math.max(1, Math.round(
-    (new Date(d.header.window_end) - new Date(d.header.window_start)) / 864e5));
+    (new Date(H.incident_end) - new Date(H.incident_start)) / 864e5));
 
-  const diagText = PLAIN && final.plain ? final.plain : final.rationale;
-  const raw = PLAIN && final.plain && final.plain !== final.rationale
-    ? `<span class="raw">original &middot; ${final.rationale}</span>` : '';
+  const narrated = d.diagnosis && d.diagnosis.text;
+  const diagText = narrated || (PLAIN && final.plain ? final.plain : final.rationale);
+  const raw = narrated && final.rationale !== narrated
+    ? `<span class="raw">ledger rationale &middot; ${esc(final.rationale)}</span>` : '';
+  const badge = narrated
+    ? (d.diagnosis.cached ? '<em>narrated &middot; cached</em>' : '<em>narrated</em>')
+    : '<em>ledger text</em>';
 
   $('#detail').innerHTML = `
   <div class="banner">
     <div class="warn">&#9888;</div>
     <div>
-      <h2>${driver.metric} anomaly</h2>
-      <div class="sub">${d.header.window_start.slice(0,10)} &rarr; ${d.header.window_end.slice(0,10)}
-        &middot; loaded ${d.header.loaded_at.slice(11,16)} IST &middot; ${days} day${days>1?'s':''}</div>
+      <h2>${esc(driver.metric)} anomaly</h2>
+      <div class="sub">${H.incident_start.slice(0,10)} &rarr; ${H.incident_end.slice(0,10)}
+        &middot; written ${H.loaded_at.slice(11,16)} IST &middot; ${days} day${days>1?'s':''}</div>
     </div>
-    <div class="big">${pct(driver.actual, driver.baseline).toFixed(1)}%</div>
+    <div class="big">${pct(driver.observed, driver.expected).toFixed(1)}%</div>
   </div>
 
   <div class="headline">
-    <div class="k">${head.metric}</div>
-    <div class="v">${hFmt(head.actual)}</div>
+    <div class="k">${esc(head.metric)}</div>
+    <div class="v">${hFmt(head.observed)}</div>
     <div class="d ${Math.abs(hPct)>10?'bad':'warn'}">${hPct.toFixed(1)}% &middot;
-      ${Math.abs(hPct)>10?'outside normal range':'within normal range'}</div>
-    <div class="exp">expected ${hFmt(head.baseline)}</div>
+      ${head.verdict==='anomaly'?'outside normal range':'within normal range'}</div>
+    <div class="exp">expected ${hFmt(head.expected)}</div>
   </div>
   <div class="chev">&#8964;</div>
 
-  <div class="tree">${global.map(mcard).join('')}</div>
+  <div class="tree">${tree.map(mcard).join('')}</div>
 
   <div class="diag">
-    <div class="lab">Diagnosis</div>
-    <div class="body">${diagText}${raw}</div>
+    <div class="lab">Diagnosis ${badge}</div>
+    <div class="body ${narrated?'':'thin'}">${esc(diagText)}${raw}</div>
     <div class="foot">
-      <span>&#9201; diagnosed in ${(d.latency_ms/1000).toFixed(1)}s</span>
-      <span>&#10003; ${S.length} steps, all logged</span>
-      <span>${d.llm.called ? '&#9889; '+d.llm.model : '&#9889; cached &middot; '+d.llm.cache_hits+' rationales'}</span>
-      ${d.trace_id ? `<span>&#8676; trace ${d.trace_id.slice(0,12)}</span>` : ''}
+      <span>&#9201; ${(d.latency_ms/1000).toFixed(1)}s</span>
+      <span>&#10003; ${S.length} ledger steps</span>
+      <span>&#9889; ${d.llm.called || (d.diagnosis && d.diagnosis.llm_ok) ? esc(d.llm.model) : 'cached'}</span>
+      ${H.ledger_trace_url ? `<a href="${H.ledger_trace_url}" target="_blank"
+        rel="noopener">&#8599; langfuse trace ${H.ledger_trace_id.slice(0,8)}</a>` : ''}
     </div>
   </div>
 
   ${local.length ? `
-    <div class="loc-h">Localised to ${local[0].dimension} &middot; picked by contribution
-      <span class="right">${local.length} segment${local.length>1?'s':''} affected</span></div>
-    ${local.map(lrow).join('')}` : ''}
+    <div class="loc-h">Localised to ${esc(local[0].dimension)} &middot; ranked by contribution
+      <span class="right">${local.length} segment${local.length>1?'s':''}</span></div>
+    ${local.sort((a,b)=>Math.abs(b.contrib||0)-Math.abs(a.contrib||0)).map(lrow).join('')}` : ''}
 
   <div class="health"><h3>Pipeline health &middot; last 24h</h3>
     <div class="kpis" id="kpis"></div><div id="healthbox"></div></div>`;
@@ -304,23 +318,24 @@ function render(d){
 function mcard(s){
   const f = isMoney(s.metric) ? money : auto;
   return `<div class="mcard ${sev(s)}">
-    <div class="k">${s.metric}</div>
-    <div class="v">${f(s.actual)}</div>
-    <div class="s">${pct(s.actual,s.baseline).toFixed(1)}% &middot; ${SEVWORD[sev(s)]}
-      &middot; was ${f(s.baseline)}</div>
+    <div class="k">${esc(s.metric)}</div>
+    <div class="v">${f(s.observed)}</div>
+    <div class="s">${pct(s.observed,s.expected).toFixed(1)}% &middot; ${word(s)}
+      &middot; was ${f(s.expected)}</div>
   </div>`;
 }
 
 function lrow(s){
   const f = isMoney(s.metric) ? money : auto;
   const why = PLAIN && s.plain ? s.plain : s.rationale;
-  return `<div class="loc">
-    <div><div class="id">${s.dim_value}</div>
-      <div class="dim">${s.dimension} &middot; ${s.step_name}</div></div>
-    <div class="nums">${f(s.baseline)} &rarr; <b>${f(s.actual)}</b>
+  const cls = s.verdict === 'anomaly' ? '' : ' ruled';
+  return `<div class="loc${cls}">
+    <div><div class="id">${esc(s.segment)}</div>
+      <div class="dim">${esc(s.dimension)} &middot; ${esc(s.step_name)} &middot; ${word(s)}</div></div>
+    <div class="nums">${f(s.expected)} &rarr; <b>${f(s.observed)}</b>
       &middot; explains ${num(s.contrib,0)}%</div>
     <div class="bar"><i style="width:${Math.min(100,Math.abs(s.contrib||0))}%"></i></div>
-    <div class="why">${why}</div>
+    <div class="why">${esc(why)}</div>
   </div>`;
 }
 
@@ -346,9 +361,9 @@ async function health(){
 
   $('#healthbox').innerHTML = `<table><tr><th>time</th><th>endpoint</th><th>status</th>
     <th>stage</th><th>ms</th><th>error</th></tr>` +
-    h.recent.map(r=>`<tr><td>${r.ts.slice(11,19)}</td><td>${r.endpoint}</td>
-      <td class="s-${r.status}">${r.status}</td><td>${r.stage}</td>
-      <td>${r.latency_ms}</td><td>${r.error||'—'}</td></tr>`).join('') + `</table>`;
+    h.recent.map(r=>`<tr><td>${r.ts.slice(11,19)}</td><td>${esc(r.endpoint)}</td>
+      <td class="s-${r.status}">${esc(r.status)}</td><td>${esc(r.stage)}</td>
+      <td>${r.latency_ms}</td><td>${esc(r.error)||'—'}</td></tr>`).join('') + `</table>`;
 }
 
 pulse(); loadRuns(false);
