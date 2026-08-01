@@ -1,6 +1,3 @@
--- Run once in ClickHouse Cloud. Change `rca` to your database name.
-
-CREATE DATABASE IF NOT EXISTS rca;
 
 -- 1. Plain-English cache. One row per distinct rationale string, so the LLM is
 --    called once per new phrasing and never again. Keeps the demo instant.
@@ -34,30 +31,6 @@ CREATE TABLE IF NOT EXISTS rca.app_events
 ENGINE = MergeTree
 ORDER BY (ts, endpoint)
 TTL toDateTime(ts) + INTERVAL 30 DAY;
-
--- 3. Optional: if you have not created the audit table yet, this matches the
---    sample rows exactly. Skip if it already exists.
-CREATE TABLE IF NOT EXISTS rca.audit_log
-(
-    run_id           UUID,
-    batch_id         UUID,
-    window_start     DateTime,
-    window_end       DateTime,
-    step_number      UInt8,
-    step_name        LowCardinality(String),
-    step_type        LowCardinality(String),   -- detection|decomposition|localization|ruleout|final
-    metric           LowCardinality(String),
-    dimension        LowCardinality(String),
-    dimension_value  String,
-    actual_value     Float64,
-    baseline_value   Float64,
-    delta            Float64,
-    contribution_pct Float32,
-    verdict          LowCardinality(String),   -- anomaly|normal
-    rationale        String,
-    created_at       DateTime DEFAULT now()
-)
-ENGINE = MergeTree
 ORDER BY (run_id, step_number);
 
 -- Sanity check after your loader runs:
