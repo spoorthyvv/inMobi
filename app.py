@@ -22,9 +22,9 @@ DB = os.environ.get("CH_DB", "rca")
 AUDIT_TABLE = os.environ.get("AUDIT_TABLE", f"{DB}.audit_log")
 MODEL = os.environ.get("LLM_MODEL", "openai/gpt-oss-20b:free")
 
-CACHE_TABLE = f"{DB}.rationale_cache"
-EVENTS_TABLE = f"{DB}.app_events"
-
+DB = os.environ.get("CH_DB", "rca")
+AUDIT_TABLE = os.environ.get("AUDIT_TABLE", f"{DB}.ledger")   # was audit_log
+MODEL = os.environ.get("LLM_MODEL", "openai/gpt-oss-20b:free")
 # Column aliases. The dashboard looks for the first name that exists in your
 # table, so renaming a column upstream does not break the UI.
 COLS = {
