@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import json
 import hashlib
@@ -19,34 +20,12 @@ load_dotenv()
 # CONFIG
 # ---------------------------------------------------------------------------
 DB = os.environ.get("CH_DB", "rca")
-AUDIT_TABLE = os.environ.get("AUDIT_TABLE", f"{DB}.ledger")
+LEDGER = os.environ.get("AUDIT_TABLE", f"{DB}.ledger")
 MODEL = os.environ.get("LLM_MODEL", "openai/gpt-oss-20b:free")
 LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com")
 
 CACHE_TABLE = f"{DB}.rationale_cache"
 EVENTS_TABLE = f"{DB}.app_events"
-
-# Physical column names in rca.ledger, first entry wins. Extra entries are
-# fallbacks so an upstream rename does not break the dashboard.
-COLS = {
-    "run_id":      ["run_id"],
-    "trace_id":    ["trace_id"],
-    "win_start":   ["incident_start", "window_start", "period_start"],
-    "win_end":     ["incident_end", "window_end", "period_end"],
-    "step_no":     ["step_order", "step_number", "step_no"],
-    "step_name":   ["step_name", "step", "action"],
-    "step_type":   ["step_type", "phase"],
-    "metric":      ["metric", "kpi", "measure"],
-    "dimension":   ["dimension", "dim", "grain"],
-    "segment":     ["segment", "dimension_value", "dim_value"],
-    "observed":    ["observed_value", "actual_value", "actual"],
-    "expected":    ["expected_value", "baseline_value", "baseline"],
-    "delta":       ["delta_value", "delta", "diff"],
-    "contrib":     ["contribution_pct", "contribution"],
-    "verdict":     ["verdict", "status", "result"],
-    "rationale":   ["rationale", "explanation", "reason"],
-    "created_at":  ["created_at", "inserted_at", "event_time"],
-}
 
 app = FastAPI(title="RCA Ledger")
 templates = Jinja2Templates(directory="templates")
@@ -61,55 +40,31 @@ client = clickhouse_connect.get_client(
 
 langfuse = get_client()
 
-llm = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.environ["OPENROUTER_API_KEY"],
-)
+llm = OpenAI(base_url="https://openrouter.ai/api/v1",
+             api_key=os.environ["OPENROUTER_API_KEY"])
 
-# Per-row plain-English rewrite, for the "Plain English" toggle.
-SIMPLIFY_PROMPT = """You rewrite technical analytics findings for a business stakeholder.
-
-Rules:
-- One sentence per finding. Maximum 22 words.
-- No jargon. Say "how many ad slots actually got filled" rather than "fill rate".
-- Never invent numbers that are not given to you.
-- Return ONLY a JSON array of strings, same length and same order as the input.
-  No markdown, no backticks, no preamble.
-"""
-
-# Ledger Diagnosis Narration skill, applied to the final + top evidence rows.
+# Ledger Diagnosis Narration skill.
 NARRATE_PROMPT = """You are a diagnostics narrator for a ClickHouse investigation system.
 You are given structured ledger rows that capture the outcome of each analysis step.
 Produce a factual incident diagnosis from these rows.
 
 Rules:
-- Only use values provided in the rows.
-- Do not invent or infer new numbers or causes.
+- Only use values provided in the rows. Do not invent or infer new numbers or causes.
 - Use the row rationale text when possible.
-- Summarize the root cause and what was checked or ruled out.
-- Keep the output factual and concise.
-- Sentence 1: root cause diagnosis. Sentence 2 (optional): rule-out or supporting detail.
+- Respect the final row's verdict. If it is 'normal', say the investigation cleared it.
+  If it is 'insufficient_volume', say the signal was too weak to confirm.
+- Sentence 1: the root cause diagnosis, or the reason it was cleared.
+- Sentence 2 (optional): what was checked or ruled out.
+- Write for a business stakeholder. No jargon, no metric names in snake_case.
+- Maximum 45 words total.
 - If the evidence is not enough, say exactly: Insufficient evidence to produce a diagnosis from the provided ledger rows.
 
-Return plain text only. No markdown, no preamble, no bullet points.
-"""
+Return plain prose only. No markdown, no bullets, no preamble, no JSON."""
+
 
 # ---------------------------------------------------------------------------
-# helpers
+# small helpers
 # ---------------------------------------------------------------------------
-
-
-def col(key: str) -> str:
-    """Physical column name for a logical field."""
-    return COLS[key][0]
-
-
-def pick(row: Dict[str, Any], key: str):
-    for candidate in COLS[key]:
-        if candidate in row:
-            return row[candidate]
-    return None
-
 
 def rows_to_dicts(result) -> List[Dict[str, Any]]:
     return [dict(zip(result.column_names, r)) for r in result.result_rows]
@@ -121,15 +76,13 @@ def text_hash(text: str) -> int:
 
 def log_event(endpoint: str, run_id: str, status: str, stage: str,
               latency_ms: int, rows: int = 0, error: str = "", trace_id: str = ""):
-    """Write app telemetry into ClickHouse. Never allowed to break a request."""
     try:
         client.insert(
             EVENTS_TABLE,
             [[endpoint, str(run_id or ""), status, stage, int(latency_ms),
               int(rows), error[:500], str(trace_id or "")]],
             column_names=["endpoint", "run_id", "status", "stage",
-                          "latency_ms", "rows_returned", "error", "trace_id"],
-        )
+                          "latency_ms", "rows_returned", "error", "trace_id"])
     except Exception:
         pass
 
@@ -137,160 +90,173 @@ def log_event(endpoint: str, run_id: str, status: str, stage: str,
 def cache_get(keys: List[int]) -> Dict[int, str]:
     res = client.query(
         f"SELECT rationale_hash, plain_text FROM {CACHE_TABLE} "
-        f"WHERE rationale_hash IN {{h:Array(UInt64)}}",
-        parameters={"h": keys},
-    )
+        f"WHERE rationale_hash IN {{h:Array(UInt64)}}", parameters={"h": keys})
     return {h: t for h, t in res.result_rows}
 
 
-def cache_put(rows: List[List[Any]]):
-    client.insert(CACHE_TABLE, rows,
-                  column_names=["rationale_hash", "rationale", "plain_text", "model"])
+def cache_put(key: int, source: str, text: str):
+    try:
+        client.insert(CACHE_TABLE, [[key, source[:4000], text, MODEL]],
+                      column_names=["rationale_hash", "rationale", "plain_text", "model"])
+    except Exception:
+        pass
 
 
-# ---------------------------------------------------------------------------
-# LLM: per-row simplify + skill-based narration
-# ---------------------------------------------------------------------------
+NUM_RE = re.compile(r"-?\d+(?:,\d{3})*(?:\.\d+)?")
 
 
-def simplify_rationales(rationales: List[str], force: bool = False) -> Dict[str, Any]:
-    out = {"plain": {}, "cache_hits": 0, "llm_called": False, "llm_ok": None,
-           "error": None, "tokens": 0}
-
-    uniq = list(dict.fromkeys([r for r in rationales if r]))
-    if not uniq:
-        return out
-
-    hashes = {r: text_hash(r) for r in uniq}
-    missing = list(uniq)
-
-    if not force:
-        with langfuse.start_as_current_observation(as_type="span", name="cache-lookup") as sp:
-            try:
-                found = cache_get(list(hashes.values()))
-                for r in uniq:
-                    if hashes[r] in found:
-                        out["plain"][r] = found[hashes[r]]
-                missing = [r for r in uniq if r not in out["plain"]]
-                out["cache_hits"] = len(out["plain"])
-                sp.update(output={"hits": out["cache_hits"], "misses": len(missing)})
-            except Exception as e:
-                sp.update(output={"cache_error": str(e)})
-
-    if not missing:
-        return out
-
-    out["llm_called"] = True
-    with langfuse.start_as_current_observation(
-        as_type="generation", name="llm-rationale-simplify"
-    ) as gen:
-        gen.update(input={"system": SIMPLIFY_PROMPT, "user": missing}, model=MODEL)
+def numbers_in(text: str) -> List[float]:
+    out = []
+    for m in NUM_RE.findall(text or ""):
         try:
-            resp = llm.chat.completions.create(
-                model=MODEL,
-                messages=[{"role": "system", "content": SIMPLIFY_PROMPT},
-                          {"role": "user", "content": json.dumps(missing)}],
-                max_tokens=800, temperature=0,
-            )
-            raw = resp.choices[0].message.content.strip()
-            raw = raw.replace("```json", "").replace("```", "").strip()
-            plain = json.loads(raw)
-            if not isinstance(plain, list) or len(plain) != len(missing):
-                raise ValueError(f"expected {len(missing)} items, got {len(plain)}")
-
-            for original, simple in zip(missing, plain):
-                out["plain"][original] = str(simple).strip()
-
-            out["tokens"] = (resp.usage.prompt_tokens or 0) + (resp.usage.completion_tokens or 0)
-            out["llm_ok"] = True
-            gen.update(output=plain, usage_details={
-                "input_tokens": resp.usage.prompt_tokens or 0,
-                "output_tokens": resp.usage.completion_tokens or 0})
-
-            cache_put([[hashes[o], o, out["plain"][o], MODEL] for o in missing])
-
-        except Exception as e:
-            out["llm_ok"] = False
-            out["error"] = str(e)
-            gen.update(output={"error": str(e)}, level="ERROR", status_message=str(e))
-            for r in missing:
-                out["plain"][r] = r          # degrade to the original text
-
+            out.append(float(m.replace(",", "")))
+        except ValueError:
+            pass
     return out
 
 
+def groundedness(narration: str, rows: List[Dict[str, Any]]):
+    """Every number in the narration must trace back to a ledger value.
+
+    This is what turns the LLM output from a nice sentence into evidence:
+    if the model invents a figure, the badge says so instead of hiding it.
+    """
+    allowed = set()
+    for r in rows:
+        for k in ("observed_value", "expected_value", "delta_value", "contribution_pct"):
+            v = r.get(k)
+            if v is None:
+                continue
+            allowed.update({round(float(v), 4), round(abs(float(v)), 4),
+                            round(float(v) / 1000, 4), round(float(v) * 100, 4)})
+        obs, exp = r.get("observed_value"), r.get("expected_value")
+        if obs is not None and exp not in (None, 0):
+            change = (float(obs) - float(exp)) / abs(float(exp)) * 100
+            allowed.update({round(change, 1), round(abs(change), 1),
+                            round(change, 0), round(abs(change), 0)})
+        allowed.update(round(n, 4) for n in numbers_in(r.get("rationale", "")))
+
+    found = numbers_in(narration)
+    unverified = []
+    for n in found:
+        if not any(abs(n - a) < 0.51 or (a and abs(n - a) / max(abs(a), 1e-9) < 0.01)
+                   for a in allowed):
+            unverified.append(n)
+
+    total = len(found)
+    ok = total - len(unverified)
+    return {"total": total, "verified": ok, "unverified": unverified,
+            "score": 1.0 if total == 0 else round(ok / total, 3)}
+
+
+def lf_score(name: str, value: float, comment: str = ""):
+    try:
+        langfuse.create_score(name=name, value=value, comment=comment[:400])
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# narration
+# ---------------------------------------------------------------------------
+
 def select_evidence(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Final row plus the top localization/ruleout rows. 2-4 rows, per the skill."""
+    """Final row plus the strongest supporting rows. 2-4 rows, per the skill."""
     final = [s for s in steps if s["step_type"] == "final"]
     support = sorted(
-        [s for s in steps if s["step_type"] in ("localization", "ruleout")],
-        key=lambda s: abs(s["contrib"] or 0), reverse=True,
-    )[:3]
-    chosen = final + support
-    if not chosen:
-        chosen = steps[-3:]
+        [s for s in steps if s["step_type"] in ("localization", "ruleout", "decomposition")],
+        key=lambda s: abs(s["contribution_pct"] or 0), reverse=True)[:3]
+    chosen = final + support or steps[-3:]
 
-    fields = ("run_id", "step_order", "step_type", "metric", "dimension", "segment",
-              "observed_value", "expected_value", "delta_value", "contribution_pct",
-              "verdict", "rationale")
-    payload = []
-    for s in chosen:
-        payload.append({
-            "run_id": s["run_id"], "step_order": s["step_no"],
-            "step_type": s["step_type"], "metric": s["metric"],
-            "dimension": s["dimension"], "segment": s["segment"],
-            "observed_value": s["observed"], "expected_value": s["expected"],
-            "delta_value": s["delta"], "contribution_pct": s["contrib"],
-            "verdict": s["verdict"], "rationale": s["rationale"],
-        })
-    return payload
+    keep = ("run_id", "step_order", "step_type", "metric", "dimension", "segment",
+            "observed_value", "expected_value", "delta_value", "contribution_pct",
+            "verdict", "rationale")
+    return [{k: (str(s[k]) if k == "run_id" else s[k]) for k in keep} for s in chosen]
 
 
-def narrate_diagnosis(steps: List[Dict[str, Any]], force: bool = False) -> Dict[str, Any]:
-    """Ledger Diagnosis Narration skill. Cached by evidence payload hash."""
-    out = {"text": None, "cached": False, "llm_ok": None, "error": None, "tokens": 0}
+def call_llm(payload: str, strict: bool = False) -> str:
+    sys_prompt = NARRATE_PROMPT
+    if strict:
+        sys_prompt += "\n\nYour previous reply was not usable. Reply with one or two plain sentences and nothing else."
+    resp = llm.chat.completions.create(
+        model=MODEL,
+        messages=[{"role": "system", "content": sys_prompt},
+                  {"role": "user", "content": f"Input rows:\n{payload}"}],
+        max_tokens=250, temperature=0)
+    return resp, (resp.choices[0].message.content or "").strip()
+
+
+def clean_narration(text: str) -> str:
+    """Free models like to wrap prose in fences, JSON, or a preamble. Strip it."""
+    t = text.strip()
+    t = re.sub(r"^```[a-z]*\s*|\s*```$", "", t).strip()
+    if t.startswith("{") or t.startswith("["):
+        try:
+            parsed = json.loads(t)
+            if isinstance(parsed, list):
+                t = " ".join(str(x) for x in parsed)
+            elif isinstance(parsed, dict):
+                t = " ".join(str(v) for v in parsed.values())
+        except Exception:
+            pass
+    t = re.sub(r"^\s*(diagnosis|answer|output|summary)\s*[:\-]\s*", "", t, flags=re.I)
+    t = re.sub(r"^\s*[-*•]\s*", "", t, flags=re.M)
+    return " ".join(t.split()).strip('"').strip()
+
+
+def narrate(steps: List[Dict[str, Any]], force: bool = False) -> Dict[str, Any]:
+    out = {"text": None, "cached": False, "ok": None, "error": None,
+           "tokens": 0, "grounding": None, "attempts": 0}
 
     evidence = select_evidence(steps)
     if not evidence:
         return out
     payload = json.dumps(evidence, sort_keys=True, default=str)
-    key = text_hash("narrate::" + payload)
+    key = text_hash("narrate-v2::" + payload)
 
     if not force:
         try:
             hit = cache_get([key])
-            if key in hit:
-                out["text"] = hit[key]
-                out["cached"] = True
+            if key in hit and hit[key].strip():
+                out.update(text=hit[key], cached=True, ok=True)
+                out["grounding"] = groundedness(hit[key], evidence)
                 return out
         except Exception:
             pass
 
     with langfuse.start_as_current_observation(
-        as_type="generation", name="llm-diagnosis-narration"
-    ) as gen:
+            as_type="generation", name="llm-diagnosis-narration") as gen:
         gen.update(input={"system": NARRATE_PROMPT, "rows": evidence}, model=MODEL)
+        text = ""
         try:
-            resp = llm.chat.completions.create(
-                model=MODEL,
-                messages=[{"role": "system", "content": NARRATE_PROMPT},
-                          {"role": "user", "content": f"Input rows:\n{payload}"}],
-                max_tokens=300, temperature=0,
-            )
-            text = resp.choices[0].message.content.strip().strip("`").strip()
-            if not text:
-                raise ValueError("empty narration")
+            for attempt in (False, True):          # one plain try, one strict retry
+                out["attempts"] += 1
+                resp, raw = call_llm(payload, strict=attempt)
+                text = clean_narration(raw)
+                out["tokens"] += ((resp.usage.prompt_tokens or 0)
+                                  + (resp.usage.completion_tokens or 0))
+                if len(text.split()) >= 4:
+                    break
+
+            if len(text.split()) < 4:
+                raise ValueError(f"unusable narration: {text!r}")
+
             out["text"] = text
-            out["llm_ok"] = True
-            out["tokens"] = (resp.usage.prompt_tokens or 0) + (resp.usage.completion_tokens or 0)
-            gen.update(output=text, usage_details={
-                "input_tokens": resp.usage.prompt_tokens or 0,
-                "output_tokens": resp.usage.completion_tokens or 0})
-            cache_put([[key, payload[:2000], text, MODEL]])
+            out["ok"] = True
+            out["grounding"] = groundedness(text, evidence)
+            gen.update(output=text, usage_details={"input_tokens": resp.usage.prompt_tokens or 0,
+                                                   "output_tokens": resp.usage.completion_tokens or 0},
+                       metadata={"attempts": out["attempts"],
+                                 "grounding": out["grounding"]})
+            lf_score("narration-groundedness", out["grounding"]["score"],
+                     f"{out['grounding']['verified']}/{out['grounding']['total']} numbers verified")
+            cache_put(key, payload, text)
+
         except Exception as e:
-            out["llm_ok"] = False
+            out["ok"] = False
             out["error"] = str(e)
             gen.update(output={"error": str(e)}, level="ERROR", status_message=str(e))
+            lf_score("narration-groundedness", 0.0, "narration failed")
 
     return out
 
@@ -299,24 +265,22 @@ def narrate_diagnosis(steps: List[Dict[str, Any]], force: bool = False) -> Dict[
 # endpoints
 # ---------------------------------------------------------------------------
 
-
 @app.get("/", response_class=HTMLResponse)
-def dashboard(request: Request):
+def home(request: Request):
     return templates.TemplateResponse(request=request, name="dashboard.html", context={})
 
 
 @app.get("/api/pulse")
 def pulse():
-    """Cheap poll, every 4s, to detect a freshly written investigation."""
+    """Polled every 4s. Fingerprint changes the moment a new ledger row lands."""
     t0 = time.time()
     try:
-        res = client.query(
-            f"SELECT count() AS total_rows, "
-            f"uniqExact({col('run_id')}) AS runs, "
-            f"uniqExact({col('trace_id')}) AS traces, "
-            f"max({col('created_at')}) AS latest "
-            f"FROM {AUDIT_TABLE}"
-        )
+        res = client.query(f"""
+            SELECT count()                AS total_rows,
+                   uniqExact(run_id)      AS runs,
+                   uniqExact(trace_id)    AS traces,
+                   max(created_at)        AS latest
+            FROM {LEDGER}""")
         total, runs, traces, latest = res.result_rows[0]
         log_event("/api/pulse", "", "success", "clickhouse",
                   int((time.time() - t0) * 1000), rows=1)
@@ -328,174 +292,183 @@ def pulse():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-@app.get("/api/runs")
-def runs(limit: int = 50):
-    """One card per investigation, newest first."""
+@app.get("/api/incidents")
+def incidents(only_anomalies: bool = True, limit: int = 100):
+    """One horizontal record per run_id. The FINAL row decides the verdict."""
     t0 = time.time()
-    c = {k: v[0] for k, v in COLS.items()}
     sql = f"""
         SELECT
-            toString({c['run_id']})                                       AS run_id,
-            toString(any({c['trace_id']}))                                AS trace_id,
-            min({c['win_start']})                                         AS incident_start,
-            max({c['win_end']})                                           AS incident_end,
-            count()                                                       AS steps,
-            countIf({c['verdict']} = 'anomaly')                           AS anomaly_steps,
-            argMaxIf({c['metric']}, {c['step_no']}, {c['step_type']} = 'final')    AS headline_metric,
-            argMaxIf({c['segment']}, {c['step_no']}, {c['step_type']} = 'final')   AS headline_segment,
-            argMaxIf({c['delta']}, {c['step_no']}, {c['step_type']} = 'final')     AS headline_delta,
-            max({c['created_at']})                                        AS loaded_at
-        FROM {AUDIT_TABLE}
-        GROUP BY {c['run_id']}
-        ORDER BY loaded_at DESC
-        LIMIT {{limit:UInt32}}
-    """
+            toString(run_id)                                                AS run_id,
+            toString(any(trace_id))                                         AS trace_id,
+            min(incident_start)                                             AS incident_start,
+            max(incident_end)                                               AS incident_end,
+            count()                                                         AS steps,
+
+            argMaxIf(verdict,          step_order, step_type='final')       AS verdict,
+            argMaxIf(metric,           step_order, step_type='final')       AS metric,
+            argMaxIf(dimension,        step_order, step_type='final')       AS dimension,
+            argMaxIf(segment,          step_order, step_type='final')       AS segment,
+            argMaxIf(observed_value,   step_order, step_type='final')       AS observed,
+            argMaxIf(expected_value,   step_order, step_type='final')       AS expected,
+            argMaxIf(delta_value,      step_order, step_type='final')       AS delta,
+            argMaxIf(contribution_pct, step_order, step_type='final')       AS confidence,
+            argMaxIf(rationale,        step_order, step_type='final')       AS final_rationale,
+
+            argMaxIf(metric,           contribution_pct,
+                     verdict='anomaly' AND step_type IN ('localization','decomposition'))  AS driver_metric,
+            argMaxIf(dimension,        contribution_pct,
+                     verdict='anomaly' AND step_type IN ('localization','decomposition'))  AS driver_dimension,
+            argMaxIf(segment,          contribution_pct,
+                     verdict='anomaly' AND step_type IN ('localization','decomposition'))  AS driver_segment,
+            maxIf(contribution_pct,
+                     verdict='anomaly' AND step_type IN ('localization','decomposition'))  AS driver_contribution,
+
+            arrayDistinct(groupArrayIf(metric, step_type='ruleout'))         AS ruled_out,
+            countIf(verdict='anomaly')                                       AS anomaly_steps,
+            max(created_at)                                                  AS written_at
+        FROM {LEDGER}
+        GROUP BY run_id
+        {"HAVING verdict = 'anomaly'" if only_anomalies else ""}
+        ORDER BY written_at DESC
+        LIMIT {{limit:UInt32}}"""
     try:
         res = client.query(sql, parameters={"limit": limit})
         data = rows_to_dicts(res)
         for d in data:
-            for k in ("incident_start", "incident_end", "loaded_at"):
+            for k in ("incident_start", "incident_end", "written_at"):
                 d[k] = str(d[k])
-        log_event("/api/runs", "", "success", "clickhouse",
+            d["change_pct"] = (round((d["observed"] - d["expected"])
+                                     / abs(d["expected"]) * 100, 1)
+                               if d["expected"] else None)
+            d["trace_url"] = f"{LANGFUSE_HOST}/trace/{d['trace_id']}" if d["trace_id"] else ""
+        log_event("/api/incidents", "", "success", "clickhouse",
                   int((time.time() - t0) * 1000), rows=len(data))
-        return {"runs": data}
+        return {"incidents": data, "only_anomalies": only_anomalies}
     except Exception as e:
-        log_event("/api/runs", "", "failure", "clickhouse",
+        log_event("/api/incidents", "", "failure", "clickhouse",
                   int((time.time() - t0) * 1000), error=str(e))
         return JSONResponse({"error": str(e), "trace": traceback.format_exc()[-800:]},
                             status_code=500)
 
 
 @app.get("/api/run/{run_id}")
-def run_detail(run_id: str, plain: bool = True, force: bool = False):
-    """Full reasoning chain for one run, Langfuse-traced end to end."""
+def run_detail(run_id: str, force: bool = False):
+    """Step chain + narrated diagnosis for one run. Fully traced in Langfuse."""
     t0 = time.time()
     app_trace_id = ""
 
-    with propagate_attributes(session_id=run_id, tags=["rca-ledger", "clickhouse"]):
-        with langfuse.start_as_current_observation(as_type="span", name="rca-run-detail") as root:
-            root.update(input={"run_id": run_id, "plain": plain, "force": force})
+    with propagate_attributes(session_id=run_id, tags=["rca-ledger"]):
+        with langfuse.start_as_current_observation(
+                as_type="span", name="rca-run-detail") as root:
+            root.update(input={"run_id": run_id, "force": force})
             try:
                 app_trace_id = langfuse.get_current_trace_id() or ""
             except Exception:
                 pass
 
-            # --- fetch. SELECT * so a new ledger column appears automatically.
             with langfuse.start_as_current_observation(
-                as_type="span", name="clickhouse-fetch-run"
-            ) as fetch:
-                q = (f"SELECT * FROM {AUDIT_TABLE} "
-                     f"WHERE {col('run_id')} = toUUID({{run_id:String}}) "
-                     f"ORDER BY {col('step_no')}")
-                fetch.update(input={"sql": q})
+                    as_type="span", name="clickhouse-fetch-ledger") as fetch:
+                q = (f"SELECT * FROM {LEDGER} WHERE run_id = toUUID({{run_id:String}}) "
+                     f"ORDER BY step_order")
+                fetch.update(input={"sql": q, "table": LEDGER})
                 try:
                     res = client.query(q, parameters={"run_id": run_id})
-                    raw = rows_to_dicts(res)
-                    fetch.update(output={"rows": len(raw)})
+                    steps = rows_to_dicts(res)
+                    fetch.update(output={"rows": len(steps),
+                                         "columns": res.column_names})
                 except Exception as e:
-                    fetch.update(output={"error": str(e)}, level="ERROR")
+                    fetch.update(output={"error": str(e)}, level="ERROR",
+                                 status_message=str(e))
                     log_event("/api/run", run_id, "failure", "clickhouse",
                               int((time.time() - t0) * 1000), error=str(e),
                               trace_id=app_trace_id)
                     return JSONResponse({"error": str(e)}, status_code=500)
 
-            if not raw:
+            if not steps:
                 log_event("/api/run", run_id, "failure", "clickhouse",
-                          int((time.time() - t0) * 1000), error="run not found",
+                          int((time.time() - t0) * 1000), error="not found",
                           trace_id=app_trace_id)
-                return JSONResponse({"error": f"No ledger rows for run_id {run_id}"},
+                return JSONResponse({"error": f"No ledger rows for {run_id}"},
                                     status_code=404)
 
-            known = {n for names in COLS.values() for n in names}
-            steps = []
-            for r in raw:
-                steps.append({
-                    "run_id":    str(pick(r, "run_id")),
-                    "step_no":   pick(r, "step_no"),
-                    "step_name": pick(r, "step_name"),
-                    "step_type": pick(r, "step_type"),
-                    "metric":    pick(r, "metric"),
-                    "dimension": pick(r, "dimension"),
-                    "segment":   pick(r, "segment"),
-                    "observed":  pick(r, "observed"),
-                    "expected":  pick(r, "expected"),
-                    "delta":     pick(r, "delta"),
-                    "contrib":   pick(r, "contrib"),
-                    "verdict":   pick(r, "verdict"),
-                    "rationale": pick(r, "rationale"),
-                    # any column the ledger gains later lands here and renders
-                    "extra": {k: str(v) for k, v in r.items() if k not in known},
-                })
+            for s in steps:
+                for k, v in list(s.items()):
+                    if k in ("run_id", "trace_id"):
+                        s[k] = str(v)
+                    elif k in ("incident_start", "incident_end", "created_at"):
+                        s[k] = str(v)
 
-            # --- narration (the skill) + per-row simplify (the toggle)
-            diag = narrate_diagnosis(steps, force=force)
-
-            simp = {"plain": {}, "cache_hits": 0, "llm_called": False,
-                    "llm_ok": None, "error": None, "tokens": 0}
-            if plain:
-                simp = simplify_rationales([s["rationale"] for s in steps], force=force)
-                for s in steps:
-                    s["plain"] = simp["plain"].get(s["rationale"], s["rationale"])
+            final = next((s for s in steps if s["step_type"] == "final"), steps[-1])
+            diag = narrate(steps, force=force)
 
             latency = int((time.time() - t0) * 1000)
-            ok = simp["llm_ok"] is not False and diag["llm_ok"] is not False
-            root.update(output={"steps": len(steps), "llm_ok": ok,
-                                "cache_hits": simp["cache_hits"]})
+            ok = diag["ok"] is not False
+
+            # trace-level context: what judges actually read in Langfuse
+            try:
+                langfuse.update_current_trace(
+                    name=f"rca:{final['metric']}:{final['verdict']}",
+                    session_id=str(final.get("trace_id") or run_id),
+                    tags=["rca-ledger", f"verdict:{final['verdict']}",
+                          f"metric:{final['metric']}",
+                          f"dimension:{final['dimension']}"],
+                    metadata={"run_id": run_id,
+                              "ledger_trace_id": str(final.get("trace_id") or ""),
+                              "steps": len(steps),
+                              "incident_start": steps[0]["incident_start"],
+                              "incident_end": steps[0]["incident_end"],
+                              "cached": diag["cached"],
+                              "llm_attempts": diag["attempts"]},
+                    input={"run_id": run_id, "steps": len(steps)},
+                    output={"verdict": final["verdict"], "diagnosis": diag["text"]})
+            except Exception:
+                pass
+
+            lf_score("run-latency-ms", float(latency))
+            lf_score("narration-cache-hit", 1.0 if diag["cached"] else 0.0)
+
+            root.update(output={"verdict": final["verdict"],
+                                "diagnosis": diag["text"],
+                                "grounding": diag["grounding"]})
 
     log_event("/api/run", run_id, "success" if ok else "failure",
-              "llm" if (simp["llm_called"] or diag["llm_ok"]) else "cache_hit",
-              latency, rows=len(steps),
-              error=simp["error"] or diag["error"] or "", trace_id=app_trace_id)
+              "cache_hit" if diag["cached"] else "llm", latency,
+              rows=len(steps), error=diag["error"] or "", trace_id=app_trace_id)
 
-    # the ledger's own trace_id points at the pipeline's Langfuse session
-    ledger_trace = str(pick(raw[0], "trace_id") or "")
-
-    header = {
-        "run_id": run_id,
-        "ledger_trace_id": ledger_trace,
-        "ledger_trace_url": f"{LANGFUSE_HOST}/trace/{ledger_trace}" if ledger_trace else "",
-        "incident_start": str(pick(raw[0], "win_start")),
-        "incident_end": str(pick(raw[0], "win_end")),
-        "loaded_at": str(pick(raw[-1], "created_at")),
-        "columns": res.column_names,
-    }
+    ledger_trace = str(final.get("trace_id") or "")
     return {
-        "header": header,
+        "run_id": run_id,
+        "verdict": final["verdict"],
         "steps": steps,
         "diagnosis": diag,
+        "ledger_trace_id": ledger_trace,
+        "ledger_trace_url": f"{LANGFUSE_HOST}/trace/{ledger_trace}" if ledger_trace else "",
         "app_trace_id": app_trace_id,
-        "llm": {"model": MODEL, "called": simp["llm_called"], "ok": simp["llm_ok"],
-                "cache_hits": simp["cache_hits"],
-                "tokens": simp["tokens"] + diag["tokens"], "error": simp["error"]},
+        "model": MODEL,
         "latency_ms": latency,
     }
 
 
 @app.get("/api/health")
 def health(hours: int = 24):
-    """Success / failure panel, read from the app's own telemetry."""
     try:
         res = client.query(f"""
-            SELECT
-                count()                                              AS calls,
-                countIf(status = 'success')                          AS ok,
-                countIf(status = 'failure')                          AS failed,
-                round(100 * countIf(status='success') / greatest(count(), 1), 1) AS success_rate,
-                round(avg(latency_ms))                               AS avg_ms,
-                round(quantile(0.95)(latency_ms))                    AS p95_ms,
-                countIf(stage = 'llm')                               AS llm_calls,
-                countIf(stage = 'cache_hit')                         AS cache_hits
+            SELECT count()                                                       AS calls,
+                   countIf(status='success')                                     AS ok,
+                   countIf(status='failure')                                     AS failed,
+                   round(100*countIf(status='success')/greatest(count(),1), 1)    AS success_rate,
+                   round(quantile(0.95)(latency_ms))                             AS p95_ms,
+                   countIf(stage='llm')                                          AS llm_calls,
+                   countIf(stage='cache_hit')                                    AS cache_hits
             FROM {EVENTS_TABLE}
-            WHERE ts > now() - INTERVAL {{h:UInt32}} HOUR
-        """, parameters={"h": hours})
+            WHERE ts > now() - INTERVAL {{h:UInt32}} HOUR""", parameters={"h": hours})
         kpi = dict(zip(res.column_names, res.result_rows[0]))
 
         recent = client.query(f"""
             SELECT toString(ts) AS ts, endpoint, status, stage, latency_ms, error
             FROM {EVENTS_TABLE}
             WHERE ts > now() - INTERVAL {{h:UInt32}} HOUR
-            ORDER BY ts DESC LIMIT 25
-        """, parameters={"h": hours})
+            ORDER BY ts DESC LIMIT 20""", parameters={"h": hours})
 
         return {"kpi": kpi, "recent": rows_to_dicts(recent)}
     except Exception as e:
@@ -504,17 +477,13 @@ def health(hours: int = 24):
 
 @app.get("/api/verdicts")
 def verdicts():
-    """Verdict split across the whole ledger."""
-    c = {k: v[0] for k, v in COLS.items()}
+    """Outcome split across the ledger, judged by the final row of each run."""
     try:
         res = client.query(f"""
-            SELECT {c['step_type']} AS step_type,
-                   {c['verdict']}   AS verdict,
-                   count()          AS n
-            FROM {AUDIT_TABLE}
-            GROUP BY step_type, verdict
-            ORDER BY n DESC
-        """)
+            SELECT verdict, count() AS runs FROM (
+                SELECT run_id, argMaxIf(verdict, step_order, step_type='final') AS verdict
+                FROM {LEDGER} GROUP BY run_id
+            ) GROUP BY verdict ORDER BY runs DESC""")
         return {"breakdown": rows_to_dicts(res)}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
