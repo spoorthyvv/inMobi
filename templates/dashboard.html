@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RCA Audit Trail</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#0A0F16; --panel:#111925; --panel-2:#161F2C; --line:#22303F;
+  --fg:#E7EEF7; --muted:#7B8FA8; --dim:#4E6076;
+  --anomaly:#FF4D6D; --normal:#3EE0AC; --amber:#FFB627; --violet:#8A7CFF;
+  --mono:'IBM Plex Mono',monospace; --disp:'Space Grotesk',sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ink);color:var(--fg);font-family:var(--disp);
+  -webkit-font-smoothing:antialiased}
+a{color:inherit}
+
+/* ---------- masthead ---------- */
+header{display:flex;align-items:center;gap:24px;padding:18px 28px;
+  border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20;
+  background:rgba(10,15,22,.92);backdrop-filter:blur(8px);flex-wrap:wrap}
+.brand{font-weight:700;font-size:17px;letter-spacing:-.3px}
+.brand span{color:var(--dim);font-weight:400}
+.livedot{width:7px;height:7px;border-radius:50%;background:var(--normal);
+  display:inline-block;margin-right:7px;box-shadow:0 0 0 0 rgba(62,224,172,.6);
+  animation:ping 2.4s ease-out infinite}
+@keyframes ping{0%{box-shadow:0 0 0 0 rgba(62,224,172,.5)}
+  70%{box-shadow:0 0 0 7px rgba(62,224,172,0)}100%{box-shadow:0 0 0 0 rgba(62,224,172,0)}}
+.pulse-meta{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-left:auto;
+  display:flex;gap:18px;flex-wrap:wrap}
+.pulse-meta b{color:var(--fg);font-weight:500}
+
+/* ---------- kpi strip ---------- */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+  gap:1px;background:var(--line);border-bottom:1px solid var(--line)}
+.kpi{background:var(--ink);padding:14px 20px}
+.kpi .k{font-family:var(--mono);font-size:10px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--dim)}
+.kpi .v{font-size:24px;font-weight:700;margin-top:5px;letter-spacing:-.5px}
+.kpi .v small{font-size:12px;color:var(--muted);font-weight:400;margin-left:3px}
+.ok{color:var(--normal)} .bad{color:var(--anomaly)} .warn{color:var(--amber)}
+
+/* ---------- layout ---------- */
+main{display:grid;grid-template-columns:320px 1fr;min-height:calc(100vh - 140px)}
+aside{border-right:1px solid var(--line);overflow-y:auto;max-height:calc(100vh - 140px)}
+.rail-head{padding:14px 20px 8px;font-family:var(--mono);font-size:10px;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+
+.run{padding:14px 20px;border-bottom:1px solid var(--line);cursor:pointer;
+  border-left:2px solid transparent;transition:background .15s,border-color .15s}
+.run:hover{background:var(--panel)}
+.run.active{background:var(--panel-2);border-left-color:var(--amber)}
+.run.fresh{animation:landed 2.4s ease-out}
+@keyframes landed{0%{background:rgba(255,182,39,.22)}100%{background:transparent}}
+.run .rid{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.run .hl{font-size:13.5px;margin:6px 0 8px;line-height:1.35}
+.run .foot{display:flex;gap:10px;align-items:center;font-family:var(--mono);font-size:10.5px;color:var(--dim)}
+.tag{font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:3px;
+  letter-spacing:.06em;text-transform:uppercase}
+.tag.anom{background:rgba(255,77,109,.14);color:var(--anomaly)}
+.tag.norm{background:rgba(62,224,172,.13);color:var(--normal)}
+
+/* ---------- detail ---------- */
+section{padding:24px 32px;overflow-y:auto;max-height:calc(100vh - 140px)}
+.detail-head{display:flex;justify-content:space-between;align-items:flex-start;
+  gap:20px;flex-wrap:wrap;margin-bottom:26px}
+.detail-head h1{font-size:20px;margin:0 0 8px;letter-spacing:-.4px}
+.detail-head .sub{font-family:var(--mono);font-size:11.5px;color:var(--muted);line-height:1.7}
+.detail-head .sub b{color:var(--fg);font-weight:500}
+
+.toggle{display:flex;align-items:center;gap:10px;font-family:var(--mono);
+  font-size:11px;color:var(--muted);user-select:none;cursor:pointer}
+.switch{width:38px;height:20px;border-radius:11px;background:var(--line);
+  position:relative;transition:background .2s;flex:none}
+.switch::after{content:'';position:absolute;top:3px;left:3px;width:14px;height:14px;
+  border-radius:50%;background:var(--muted);transition:.2s}
+.toggle.on .switch{background:rgba(138,124,255,.35)}
+.toggle.on .switch::after{left:21px;background:var(--violet)}
+.toggle.on{color:var(--violet)}
+
+/* ---------- the ladder (signature) ---------- */
+.ladder{position:relative;padding-left:44px}
+.ladder::before{content:'';position:absolute;left:15px;top:12px;bottom:12px;
+  width:1px;background:linear-gradient(var(--line),var(--line) 70%,transparent)}
+.step{position:relative;margin-bottom:14px;background:var(--panel);
+  border:1px solid var(--line);border-radius:6px;padding:16px 18px;
+  animation:rise .35s ease both}
+.step:nth-child(1){animation-delay:.02s}.step:nth-child(2){animation-delay:.06s}
+.step:nth-child(3){animation-delay:.1s}.step:nth-child(4){animation-delay:.14s}
+.step:nth-child(5){animation-delay:.18s}.step:nth-child(6){animation-delay:.22s}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.step.final{border-color:rgba(255,182,39,.4);background:linear-gradient(var(--panel-2),var(--panel))}
+.node{position:absolute;left:-37px;top:16px;width:24px;height:24px;border-radius:50%;
+  background:var(--ink);border:1px solid var(--line);display:grid;place-items:center;
+  font-family:var(--mono);font-size:11px;color:var(--muted)}
+.step.anom .node{border-color:var(--anomaly);color:var(--anomaly)}
+.step.norm .node{border-color:var(--normal);color:var(--normal)}
+.step.final .node{border-color:var(--amber);color:var(--amber);background:rgba(255,182,39,.1)}
+
+.step-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.sname{font-family:var(--mono);font-size:13px;font-weight:500}
+.stype{font-family:var(--mono);font-size:10px;color:var(--dim);
+  border:1px solid var(--line);padding:1px 6px;border-radius:3px}
+.scope{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:auto}
+
+.nums{display:flex;gap:26px;flex-wrap:wrap;margin:12px 0}
+.num .k{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--dim)}
+.num .v{font-family:var(--mono);font-size:15px;margin-top:3px}
+
+.bar{height:3px;background:var(--line);border-radius:2px;overflow:hidden;margin:12px 0 4px}
+.bar i{display:block;height:100%;background:var(--amber);border-radius:2px;
+  transition:width .5s cubic-bezier(.2,.8,.2,1)}
+.barlab{font-family:var(--mono);font-size:10px;color:var(--dim)}
+
+.why{margin-top:12px;font-size:14px;line-height:1.55;border-left:2px solid var(--line);
+  padding-left:12px;transition:opacity .18s}
+.why.plainmode{border-left-color:var(--violet)}
+.why .src{display:block;margin-top:7px;font-family:var(--mono);font-size:10.5px;
+  color:var(--dim);line-height:1.5}
+.extras{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
+.chip{font-family:var(--mono);font-size:10px;background:var(--panel-2);
+  border:1px solid var(--line);color:var(--muted);padding:2px 7px;border-radius:3px}
+
+/* ---------- health ---------- */
+.health{margin-top:34px;border-top:1px solid var(--line);padding-top:22px}
+.health h2{font-size:13px;font-family:var(--mono);letter-spacing:.1em;
+  text-transform:uppercase;color:var(--dim);font-weight:500;margin:0 0 14px}
+table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11.5px}
+th{text-align:left;color:var(--dim);font-weight:500;padding:6px 10px 6px 0;
+  border-bottom:1px solid var(--line);font-size:10px;letter-spacing:.08em;text-transform:uppercase}
+td{padding:7px 10px 7px 0;border-bottom:1px solid rgba(34,48,63,.5);color:var(--muted)}
+td.s-success{color:var(--normal)} td.s-failure{color:var(--anomaly)}
+
+/* ---------- toast / empty ---------- */
+#toast{position:fixed;bottom:26px;right:26px;background:var(--panel-2);
+  border:1px solid var(--amber);border-left-width:3px;padding:13px 18px;border-radius:5px;
+  font-family:var(--mono);font-size:12px;transform:translateY(80px);opacity:0;
+  transition:.35s cubic-bezier(.2,.8,.2,1);z-index:50;max-width:320px}
+#toast.show{transform:none;opacity:1}
+#toast b{color:var(--amber)}
+.empty{color:var(--dim);font-family:var(--mono);font-size:12.5px;padding:60px 0;text-align:center;line-height:1.9}
+.err{border:1px solid var(--anomaly);background:rgba(255,77,109,.07);color:var(--anomaly);
+  padding:14px 16px;border-radius:5px;font-family:var(--mono);font-size:12px;line-height:1.6}
+@media(max-width:900px){main{grid-template-columns:1fr}aside{max-height:260px}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand"><span class="livedot"></span>RCA Audit Trail <span>/ clickhouse</span></div>
+  <div class="pulse-meta" id="pulse">connecting…</div>
+</header>
+
+<div class="kpis" id="kpis"></div>
+
+<main>
+  <aside>
+    <div class="rail-head">Investigation runs</div>
+    <div id="runlist"><div class="empty">loading…</div></div>
+  </aside>
+  <section id="detail">
+    <div class="empty">Pick a run on the left.<br>New batches appear here on their own.</div>
+  </section>
+</main>
+
+<div id="toast"></div>
+
+<script>
+let PLAIN = true, ACTIVE = null, FP = null, FIRST = true;
+const $ = s => document.querySelector(s);
+const fmt = n => n === null || n === undefined ? '—'
+  : (Math.abs(n) >= 1000 ? Number(n).toLocaleString('en-US',{maximumFractionDigits:0})
+  : Number(n).toFixed(Math.abs(n) < 10 ? 2 : 1));
+
+function toast(msg){
+  const t = $('#toast'); t.innerHTML = msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 5200);
+}
+
+/* ---- live batch detection ---- */
+async function pulse(){
+  try{
+    const p = await (await fetch('/api/pulse')).json();
+    if(p.error) throw new Error(p.error);
+    $('#pulse').innerHTML =
+      `rows <b>${p.total_rows}</b>` +
+      `<span>runs <b>${p.runs}</b></span>` +
+      `<span>batches <b>${p.batches}</b></span>` +
+      `<span>last load <b>${p.latest}</b></span>`;
+    if(FP && p.fingerprint !== FP){
+      toast(`<b>New batch landed.</b><br>${p.total_rows} rows · ${p.runs} runs`);
+      await loadRuns(true);
+      health();
+    }
+    FP = p.fingerprint;
+  }catch(e){
+    $('#pulse').innerHTML = `<span class="bad">clickhouse unreachable — ${e.message}</span>`;
+  }
+}
+
+/* ---- run rail ---- */
+async function loadRuns(highlightNew){
+  const r = await (await fetch('/api/runs')).json();
+  if(r.error){ $('#runlist').innerHTML = `<div class="err">${r.error}</div>`; return; }
+  const seen = new Set([...document.querySelectorAll('.run')].map(e=>e.dataset.id));
+  $('#runlist').innerHTML = r.runs.map(x => {
+    const anom = x.anomaly_steps > 0;
+    const fresh = highlightNew && !seen.has(x.run_id) ? ' fresh' : '';
+    return `<div class="run${fresh}${x.run_id===ACTIVE?' active':''}" data-id="${x.run_id}"
+              onclick="openRun('${x.run_id}')">
+      <div class="rid">${x.run_id.slice(0,8)} · ${String(x.window_start).slice(0,10)}</div>
+      <div class="hl">${x.headline_metric || 'run'} ${x.headline_delta<0?'down':'up'}
+        ${fmt(Math.abs(x.headline_delta))} in ${x.headline_segment || 'global'}</div>
+      <div class="foot">
+        <span class="tag ${anom?'anom':'norm'}">${anom?x.anomaly_steps+' anomaly':'clean'}</span>
+        <span>${x.steps} steps</span><span>${String(x.loaded_at).slice(11,19)}</span>
+      </div></div>`;
+  }).join('') || '<div class="empty">No runs yet.<br>Load a batch and it shows up here.</div>';
+  if(FIRST && r.runs.length){ FIRST = false; openRun(r.runs[0].run_id); }
+}
+
+/* ---- detail ---- */
+async function openRun(id){
+  ACTIVE = id;
+  document.querySelectorAll('.run').forEach(e=>e.classList.toggle('active', e.dataset.id===id));
+  $('#detail').innerHTML = '<div class="empty">tracing…</div>';
+  const d = await (await fetch(`/api/run/${id}?plain=${PLAIN}`)).json();
+  if(d.error){ $('#detail').innerHTML = `<div class="err">${d.error}</div>`; return; }
+  render(d); health();
+}
+
+function render(d){
+  const h = d.header, llm = d.llm;
+  const llmNote = llm.ok === false
+    ? `<span class="bad">llm failed — showing original text (${llm.error||''})</span>`
+    : llm.called ? `llm <b>${llm.model}</b> · ${llm.tokens} tokens`
+    : `<b>cached</b> · ${llm.cache_hits} rationales`;
+
+  $('#detail').innerHTML = `
+  <div class="detail-head">
+    <div>
+      <h1>${h.window_start.slice(0,10)} · ${d.steps.length}-step investigation</h1>
+      <div class="sub">
+        run <b>${h.run_id}</b><br>
+        batch <b>${h.batch_id}</b> · loaded <b>${h.loaded_at}</b><br>
+        traced in langfuse <b>${d.trace_id ? d.trace_id.slice(0,16) : 'n/a'}</b> · ${d.latency_ms} ms<br>
+        ${llmNote}
+      </div>
+    </div>
+    <div class="toggle ${PLAIN?'on':''}" onclick="flip()">
+      <div class="switch"></div> Plain English
+    </div>
+  </div>
+  <div class="ladder">${d.steps.map(card).join('')}</div>
+  <div class="health"><h2>Pipeline health · last 24h</h2><div id="healthbox"></div></div>`;
+}
+
+function card(s){
+  const cls = s.step_type === 'final' ? 'final' : (s.verdict === 'anomaly' ? 'anom' : 'norm');
+  const text = PLAIN && s.plain ? s.plain : s.rationale;
+  const src = PLAIN && s.plain && s.plain !== s.rationale
+    ? `<span class="src">original · ${s.rationale}</span>` : '';
+  const extras = Object.entries(s.extra || {})
+    .map(([k,v])=>`<span class="chip">${k} ${v}</span>`).join('');
+  return `<div class="step ${cls}">
+    <div class="node">${s.step_no}</div>
+    <div class="step-top">
+      <span class="sname">${s.step_name}</span>
+      <span class="stype">${s.step_type}</span>
+      <span class="scope">${s.metric} · ${s.dimension}=${s.dim_value}</span>
+    </div>
+    <div class="nums">
+      <div class="num"><div class="k">actual</div><div class="v">${fmt(s.actual)}</div></div>
+      <div class="num"><div class="k">baseline</div><div class="v">${fmt(s.baseline)}</div></div>
+      <div class="num"><div class="k">delta</div>
+        <div class="v ${s.delta<0?'bad':'ok'}">${s.delta>0?'+':''}${fmt(s.delta)}</div></div>
+      <div class="num"><div class="k">verdict</div>
+        <div class="v ${s.verdict==='anomaly'?'bad':'ok'}">${s.verdict}</div></div>
+    </div>
+    <div class="bar"><i style="width:${Math.min(100, Math.abs(s.contrib||0))}%"></i></div>
+    <div class="barlab">explains ${fmt(s.contrib)}% of the movement</div>
+    <div class="why ${PLAIN?'plainmode':''}">${text}${src}</div>
+    ${extras ? `<div class="extras">${extras}</div>` : ''}
+  </div>`;
+}
+
+function flip(){ PLAIN = !PLAIN; if(ACTIVE) openRun(ACTIVE); }
+
+/* ---- health ---- */
+async function health(){
+  const h = await (await fetch('/api/health')).json();
+  if(h.error) return;
+  const k = h.kpi;
+  $('#kpis').innerHTML = [
+    ['api calls 24h', k.calls, ''],
+    ['success', k.ok, 'ok'],
+    ['failure', k.failed, k.failed > 0 ? 'bad' : ''],
+    ['success rate', k.success_rate + '<small>%</small>', k.success_rate >= 95 ? 'ok' : 'warn'],
+    ['p95 latency', k.p95_ms + '<small>ms</small>', ''],
+    ['llm calls', k.llm_calls, ''],
+    ['cache hits', k.cache_hits, 'ok'],
+  ].map(([kk,v,c]) => `<div class="kpi"><div class="k">${kk}</div>
+     <div class="v ${c}">${v}</div></div>`).join('');
+
+  const box = $('#healthbox');
+  if(box) box.innerHTML = `<table><tr><th>time</th><th>endpoint</th><th>status</th>
+    <th>stage</th><th>ms</th><th>error</th></tr>` +
+    h.recent.map(r=>`<tr><td>${r.ts.slice(11,19)}</td><td>${r.endpoint}</td>
+      <td class="s-${r.status}">${r.status}</td><td>${r.stage}</td>
+      <td>${r.latency_ms}</td><td>${r.error||'—'}</td></tr>`).join('') + `</table>`;
+}
+
+pulse(); loadRuns(false); health();
+setInterval(pulse, 4000);
+setInterval(health, 15000);
+</script>
+</body>
+</html>
