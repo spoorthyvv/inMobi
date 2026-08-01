@@ -1,333 +1,489 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RCA — incident ledger</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<style>
-:root{
-  --bg:#1A1A1A; --bg2:#212121; --card:#2B2B2B; --line:#3A3A3A;
-  --fg:#F2F2F2; --muted:#9B9B9B; --dim:#6E6E6E;
-  --red:#EF4444; --red-bg:#3B1416; --red-fg:#FF8A8A;
-  --grn:#22C55E; --grn-bg:#14401F; --grn-fg:#5FE87C;
-  --amb:#F59E0B; --amb-bg:#3A2A0B; --amb-fg:#FFC04D;
-  --sans:'Inter',system-ui,sans-serif; --mono:'IBM Plex Mono',monospace;
-}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);
-  -webkit-font-smoothing:antialiased}
-a{color:var(--amb-fg)}
+import os
+import re
+import time
+import json
+import hashlib
+import traceback
+from typing import Any, Dict, List, Optional
 
-header{display:flex;align-items:center;gap:22px;padding:14px 28px;flex-wrap:wrap;
-  border-bottom:1px solid var(--line);position:sticky;top:0;z-index:30;
-  background:rgba(26,26,26,.96);backdrop-filter:blur(8px)}
-.brand{font-weight:600;font-size:15px}
-.brand i{width:7px;height:7px;border-radius:50%;background:var(--grn);
-  display:inline-block;margin-right:8px;animation:ping 2.4s ease-out infinite}
-@keyframes ping{0%{box-shadow:0 0 0 0 rgba(34,197,94,.5)}
-  70%{box-shadow:0 0 0 7px rgba(34,197,94,0)}100%{box-shadow:0 0 0 0 rgba(34,197,94,0)}}
-.seg{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
-.seg button{background:none;border:0;color:var(--muted);font-family:var(--sans);
-  font-size:12px;padding:6px 13px;cursor:pointer}
-.seg button.on{background:var(--card);color:var(--fg)}
-.meta{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:auto;
-  display:flex;gap:16px;flex-wrap:wrap}
-.meta b{color:var(--fg);font-weight:500}
+from dotenv import load_dotenv
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
+import clickhouse_connect
+from langfuse import get_client, propagate_attributes
+from openai import OpenAI
 
-main{padding:22px 28px 70px}
-.count{font-family:var(--mono);font-size:11px;color:var(--dim);margin-bottom:14px;
-  letter-spacing:.08em;text-transform:uppercase}
+load_dotenv()
 
-/* ---------- the horizontal record ---------- */
-.rec{background:var(--bg2);border:1px solid var(--line);border-left:3px solid var(--line);
-  border-radius:8px;margin-bottom:12px;overflow:hidden;animation:rise .3s ease both}
-@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
-.rec.anomaly{border-left-color:var(--red)}
-.rec.normal{border-left-color:var(--grn)}
-.rec.insufficient_volume{border-left-color:var(--amb)}
-.rec.fresh{animation:landed 2.6s ease-out}
-@keyframes landed{0%{background:rgba(245,158,11,.2)}100%{background:var(--bg2)}}
+# ---------------------------------------------------------------------------
+# CONFIG
+# ---------------------------------------------------------------------------
+DB = os.environ.get("CH_DB", "rca")
+LEDGER = os.environ.get("AUDIT_TABLE", f"{DB}.ledger")
+MODEL = os.environ.get("LLM_MODEL", "openai/gpt-oss-20b:free")
+LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com")
 
-.row{display:flex;align-items:center;gap:26px;padding:15px 20px;cursor:pointer;
-  flex-wrap:wrap}
-.row:hover{background:var(--card)}
-.cell{min-width:0}
-.cell .k{font-family:var(--mono);font-size:9px;letter-spacing:.12em;
-  text-transform:uppercase;color:var(--dim);margin-bottom:4px;white-space:nowrap}
-.cell .v{font-family:var(--mono);font-size:14px;white-space:nowrap}
-.cell.wide{flex:1 1 260px;min-width:200px}
-.cell.wide .v{font-family:var(--sans);font-size:13.5px;white-space:normal;
-  line-height:1.45;color:var(--fg)}
-.cell.wide .v.pending{color:var(--dim);font-family:var(--mono);font-size:11.5px}
+CACHE_TABLE = f"{DB}.rationale_cache"
+EVENTS_TABLE = f"{DB}.app_events"
 
-.badge{font-family:var(--mono);font-size:10px;padding:3px 9px;border-radius:4px;
-  text-transform:uppercase;letter-spacing:.07em;white-space:nowrap}
-.badge.anomaly{background:var(--red-bg);color:var(--red-fg);border:1px solid var(--red)}
-.badge.normal{background:var(--grn-bg);color:var(--grn-fg);border:1px solid var(--grn)}
-.badge.insufficient_volume{background:var(--amb-bg);color:var(--amb-fg);border:1px solid var(--amb)}
-.badge.ruled_out{background:var(--grn-bg);color:var(--grn-fg);border:1px solid var(--grn)}
-.down{color:var(--red-fg)} .up{color:var(--grn-fg)} .flat{color:var(--muted)}
-.caret{color:var(--dim);font-family:var(--mono);font-size:14px;margin-left:auto;
-  transition:transform .2s}
-.rec.open .caret{transform:rotate(180deg)}
+app = FastAPI(title="RCA Ledger")
+templates = Jinja2Templates(directory="templates")
 
-/* ---------- drawer ---------- */
-.drawer{display:none;border-top:1px solid var(--line);padding:18px 20px 20px;
-  background:var(--bg)}
-.rec.open .drawer{display:block}
-.drawer h4{font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;
-  text-transform:uppercase;color:var(--dim);font-weight:500;margin:0 0 10px}
-.chain{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11.5px;
-  margin-bottom:18px}
-.chain th{text-align:left;color:var(--dim);font-weight:500;padding:6px 12px 6px 0;
-  border-bottom:1px solid var(--line);font-size:9px;letter-spacing:.1em;
-  text-transform:uppercase;white-space:nowrap}
-.chain td{padding:8px 12px 8px 0;border-bottom:1px solid rgba(58,58,58,.5);
-  color:var(--muted);vertical-align:top}
-.chain td.step{color:var(--fg)}
-.chain td.why{font-family:var(--sans);font-size:12px;line-height:1.45;min-width:220px}
-.chain tr.anomaly td.step{color:var(--red-fg)}
-.bar{width:70px;height:3px;background:var(--line);border-radius:2px;
-  overflow:hidden;display:inline-block;vertical-align:middle;margin-right:8px}
-.bar i{display:block;height:100%;background:var(--red)}
-.foot{display:flex;gap:22px;flex-wrap:wrap;font-family:var(--mono);font-size:11px;
-  color:var(--muted);padding-top:4px}
-.foot .verified{color:var(--grn-fg)} .foot .unverified{color:var(--amb-fg)}
+client = clickhouse_connect.get_client(
+    host=os.environ["CH_HOST"],
+    port=int(os.environ.get("CH_PORT", 8443)),
+    username=os.environ.get("CH_USER", "default"),
+    password=os.environ["CH_PASSWORD"],
+    secure=True,
+)
 
-/* ---------- health ---------- */
-.health{margin-top:34px;border-top:1px solid var(--line);padding-top:22px}
-.health h3{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;
-  text-transform:uppercase;color:var(--dim);font-weight:500;margin:0 0 14px}
-.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:12px;
-  margin-bottom:18px}
-.kpi{background:var(--bg2);border:1px solid var(--line);border-radius:7px;padding:11px 14px}
-.kpi .k{font-family:var(--mono);font-size:9px;letter-spacing:.1em;
-  text-transform:uppercase;color:var(--dim)}
-.kpi .v{font-family:var(--mono);font-size:19px;font-weight:600;margin-top:5px}
-.kpi .v small{font-size:11px;color:var(--muted);font-weight:400}
-.ok{color:var(--grn-fg)} .bad{color:var(--red-fg)} .warn{color:var(--amb-fg)}
-#hbox table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:10.5px}
-#hbox th{text-align:left;color:var(--dim);font-weight:500;padding:5px 10px 5px 0;
-  border-bottom:1px solid var(--line);font-size:9px;letter-spacing:.08em;text-transform:uppercase}
-#hbox td{padding:5px 10px 5px 0;border-bottom:1px solid rgba(58,58,58,.5);color:var(--muted)}
-#hbox td.s-success{color:var(--grn-fg)} #hbox td.s-failure{color:var(--red-fg)}
+langfuse = get_client()
 
-#toast{position:fixed;bottom:24px;right:24px;background:var(--card);
-  border-left:3px solid var(--amb);padding:13px 18px;border-radius:6px;
-  font-family:var(--mono);font-size:12px;transform:translateY(80px);opacity:0;
-  transition:.35s cubic-bezier(.2,.8,.2,1);z-index:60;max-width:300px}
-#toast.show{transform:none;opacity:1}
-#toast b{color:var(--amb)}
-.empty{color:var(--dim);font-family:var(--mono);font-size:12px;padding:60px 0;
-  text-align:center;line-height:1.9}
-.err{border:1px solid var(--red);background:rgba(239,68,68,.08);color:var(--red-fg);
-  padding:14px 16px;border-radius:6px;font-family:var(--mono);font-size:12px;line-height:1.6}
-@media(max-width:820px){.row{gap:16px}.cell.wide{flex-basis:100%}}
-@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
-</style>
-</head>
-<body>
+llm = OpenAI(base_url="https://openrouter.ai/api/v1",
+             api_key=os.environ["OPENROUTER_API_KEY"])
 
-<header>
-  <div class="brand"><i></i>RCA &middot; incident ledger</div>
-  <div class="seg">
-    <button id="bAnom" class="on" onclick="setFilter(true)">Anomalies</button>
-    <button id="bAll" onclick="setFilter(false)">All runs</button>
-  </div>
-  <div class="meta" id="pulse">connecting&hellip;</div>
-</header>
+# Ledger Diagnosis Narration skill.
+NARRATE_PROMPT = """You are a diagnostics narrator for a ClickHouse investigation system.
+You are given structured ledger rows that capture the outcome of each analysis step.
+Produce a factual incident diagnosis from these rows.
 
-<main>
-  <div class="count" id="count"></div>
-  <div id="list"><div class="empty">loading&hellip;</div></div>
-  <div class="health"><h3>Pipeline health &middot; last 24h</h3>
-    <div class="kpis" id="kpis"></div><div id="hbox"></div></div>
-</main>
+Rules:
+- Only use values provided in the rows. Do not invent or infer new numbers or causes.
+- Use the row rationale text when possible.
+- Respect the final row's verdict. If it is 'normal', say the investigation cleared it.
+  If it is 'insufficient_volume', say the signal was too weak to confirm.
+- Sentence 1: the root cause diagnosis, or the reason it was cleared.
+- Sentence 2 (optional): what was checked or ruled out.
+- Write for a business stakeholder. No jargon, no metric names in snake_case.
+- Maximum 45 words total.
+- If the evidence is not enough, say exactly: Insufficient evidence to produce a diagnosis from the provided ledger rows.
 
-<div id="toast"></div>
+Return plain prose only. No markdown, no bullets, no preamble, no JSON."""
 
-<script>
-let ONLY_ANOM = true, FP = null, LOADED = {}, OPEN = new Set();
-const $ = s => document.querySelector(s);
-const esc = s => String(s ?? '').replace(/[&<>"]/g,
-  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const nf = (n, d) => n === null || n === undefined || isNaN(n) ? '—'
-  : Number(n).toLocaleString('en-US', {minimumFractionDigits:d ?? 0, maximumFractionDigits:d ?? 0});
-const isMoney = m => /revenue|ecpm|cpm|spend|cost|price/i.test(m || '');
-const fmt = (n, m) => n === null || n === undefined ? '—'
-  : isMoney(m) ? '₹' + nf(n, Math.abs(n) >= 1000 ? 0 : 2)
-  : Math.abs(n) >= 1000 ? nf(n, 0)
-  : nf(n, 4).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
-const day = s => String(s).slice(0, 10);
 
-function toast(m){ const t=$('#toast'); t.innerHTML=m; t.classList.add('show');
-  setTimeout(()=>t.classList.remove('show'), 5000); }
+# ---------------------------------------------------------------------------
+# small helpers
+# ---------------------------------------------------------------------------
 
-async function pulse(){
-  try{
-    const p = await (await fetch('/api/pulse')).json();
-    if(p.error) throw new Error(p.error);
-    $('#pulse').innerHTML = `ledger rows <b>${p.total_rows}</b>`
-      + `<span>runs <b>${p.runs}</b></span>`
-      + `<span>traces <b>${p.traces}</b></span>`
-      + `<span>last write <b>${p.latest}</b></span>`;
-    if(FP && p.fingerprint !== FP){
-      toast('<b>New investigation written.</b><br>refreshing the ledger');
-      await load(true); health();
+def rows_to_dicts(result) -> List[Dict[str, Any]]:
+    return [dict(zip(result.column_names, r)) for r in result.result_rows]
+
+
+def text_hash(text: str) -> int:
+    return int.from_bytes(hashlib.md5(text.encode()).digest()[:8], "big")
+
+
+def log_event(endpoint: str, run_id: str, status: str, stage: str,
+              latency_ms: int, rows: int = 0, error: str = "", trace_id: str = ""):
+    try:
+        client.insert(
+            EVENTS_TABLE,
+            [[endpoint, str(run_id or ""), status, stage, int(latency_ms),
+              int(rows), error[:500], str(trace_id or "")]],
+            column_names=["endpoint", "run_id", "status", "stage",
+                          "latency_ms", "rows_returned", "error", "trace_id"])
+    except Exception:
+        pass
+
+
+def cache_get(keys: List[int]) -> Dict[int, str]:
+    res = client.query(
+        f"SELECT rationale_hash, plain_text FROM {CACHE_TABLE} "
+        f"WHERE rationale_hash IN {{h:Array(UInt64)}}", parameters={"h": keys})
+    return {h: t for h, t in res.result_rows}
+
+
+def cache_put(key: int, source: str, text: str):
+    try:
+        client.insert(CACHE_TABLE, [[key, source[:4000], text, MODEL]],
+                      column_names=["rationale_hash", "rationale", "plain_text", "model"])
+    except Exception:
+        pass
+
+
+NUM_RE = re.compile(r"-?\d+(?:,\d{3})*(?:\.\d+)?")
+
+
+def numbers_in(text: str) -> List[float]:
+    out = []
+    for m in NUM_RE.findall(text or ""):
+        try:
+            out.append(float(m.replace(",", "")))
+        except ValueError:
+            pass
+    return out
+
+
+def groundedness(narration: str, rows: List[Dict[str, Any]]):
+    """Every number in the narration must trace back to a ledger value.
+
+    This is what turns the LLM output from a nice sentence into evidence:
+    if the model invents a figure, the badge says so instead of hiding it.
+    """
+    allowed = set()
+    for r in rows:
+        for k in ("observed_value", "expected_value", "delta_value", "contribution_pct"):
+            v = r.get(k)
+            if v is None:
+                continue
+            allowed.update({round(float(v), 4), round(abs(float(v)), 4),
+                            round(float(v) / 1000, 4), round(float(v) * 100, 4)})
+        obs, exp = r.get("observed_value"), r.get("expected_value")
+        if obs is not None and exp not in (None, 0):
+            change = (float(obs) - float(exp)) / abs(float(exp)) * 100
+            allowed.update({round(change, 1), round(abs(change), 1),
+                            round(change, 0), round(abs(change), 0)})
+        allowed.update(round(n, 4) for n in numbers_in(r.get("rationale", "")))
+
+    found = numbers_in(narration)
+    unverified = []
+    for n in found:
+        if not any(abs(n - a) < 0.51 or (a and abs(n - a) / max(abs(a), 1e-9) < 0.01)
+                   for a in allowed):
+            unverified.append(n)
+
+    total = len(found)
+    ok = total - len(unverified)
+    return {"total": total, "verified": ok, "unverified": unverified,
+            "score": 1.0 if total == 0 else round(ok / total, 3)}
+
+
+def lf_score(name: str, value: float, comment: str = ""):
+    try:
+        langfuse.create_score(name=name, value=value, comment=comment[:400])
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# narration
+# ---------------------------------------------------------------------------
+
+def select_evidence(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Final row plus the strongest supporting rows. 2-4 rows, per the skill."""
+    final = [s for s in steps if s["step_type"] == "final"]
+    support = sorted(
+        [s for s in steps if s["step_type"] in ("localization", "ruleout", "decomposition")],
+        key=lambda s: abs(s["contribution_pct"] or 0), reverse=True)[:3]
+    chosen = final + support or steps[-3:]
+
+    keep = ("run_id", "step_order", "step_type", "metric", "dimension", "segment",
+            "observed_value", "expected_value", "delta_value", "contribution_pct",
+            "verdict", "rationale")
+    return [{k: (str(s[k]) if k == "run_id" else s[k]) for k in keep} for s in chosen]
+
+
+def call_llm(payload: str, strict: bool = False) -> str:
+    sys_prompt = NARRATE_PROMPT
+    if strict:
+        sys_prompt += "\n\nYour previous reply was not usable. Reply with one or two plain sentences and nothing else."
+    resp = llm.chat.completions.create(
+        model=MODEL,
+        messages=[{"role": "system", "content": sys_prompt},
+                  {"role": "user", "content": f"Input rows:\n{payload}"}],
+        max_tokens=250, temperature=0)
+    return resp, (resp.choices[0].message.content or "").strip()
+
+
+def clean_narration(text: str) -> str:
+    """Free models like to wrap prose in fences, JSON, or a preamble. Strip it."""
+    t = text.strip()
+    t = re.sub(r"^```[a-z]*\s*|\s*```$", "", t).strip()
+    if t.startswith("{") or t.startswith("["):
+        try:
+            parsed = json.loads(t)
+            if isinstance(parsed, list):
+                t = " ".join(str(x) for x in parsed)
+            elif isinstance(parsed, dict):
+                t = " ".join(str(v) for v in parsed.values())
+        except Exception:
+            pass
+    t = re.sub(r"^\s*(diagnosis|answer|output|summary)\s*[:\-]\s*", "", t, flags=re.I)
+    t = re.sub(r"^\s*[-*•]\s*", "", t, flags=re.M)
+    return " ".join(t.split()).strip('"').strip()
+
+
+def narrate(steps: List[Dict[str, Any]], force: bool = False) -> Dict[str, Any]:
+    out = {"text": None, "cached": False, "ok": None, "error": None,
+           "tokens": 0, "grounding": None, "attempts": 0}
+
+    evidence = select_evidence(steps)
+    if not evidence:
+        return out
+    payload = json.dumps(evidence, sort_keys=True, default=str)
+    key = text_hash("narrate-v2::" + payload)
+
+    if not force:
+        try:
+            hit = cache_get([key])
+            if key in hit and hit[key].strip():
+                out.update(text=hit[key], cached=True, ok=True)
+                out["grounding"] = groundedness(hit[key], evidence)
+                return out
+        except Exception:
+            pass
+
+    with langfuse.start_as_current_observation(
+            as_type="generation", name="llm-diagnosis-narration") as gen:
+        gen.update(input={"system": NARRATE_PROMPT, "rows": evidence}, model=MODEL)
+        text = ""
+        try:
+            for attempt in (False, True):          # one plain try, one strict retry
+                out["attempts"] += 1
+                resp, raw = call_llm(payload, strict=attempt)
+                text = clean_narration(raw)
+                out["tokens"] += ((resp.usage.prompt_tokens or 0)
+                                  + (resp.usage.completion_tokens or 0))
+                if len(text.split()) >= 4:
+                    break
+
+            if len(text.split()) < 4:
+                raise ValueError(f"unusable narration: {text!r}")
+
+            out["text"] = text
+            out["ok"] = True
+            out["grounding"] = groundedness(text, evidence)
+            gen.update(output=text, usage_details={"input_tokens": resp.usage.prompt_tokens or 0,
+                                                   "output_tokens": resp.usage.completion_tokens or 0},
+                       metadata={"attempts": out["attempts"],
+                                 "grounding": out["grounding"]})
+            lf_score("narration-groundedness", out["grounding"]["score"],
+                     f"{out['grounding']['verified']}/{out['grounding']['total']} numbers verified")
+            cache_put(key, payload, text)
+
+        except Exception as e:
+            out["ok"] = False
+            out["error"] = str(e)
+            gen.update(output={"error": str(e)}, level="ERROR", status_message=str(e))
+            lf_score("narration-groundedness", 0.0, "narration failed")
+
+    return out
+
+
+# ---------------------------------------------------------------------------
+# endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/", response_class=HTMLResponse)
+def home(request: Request):
+    return templates.TemplateResponse(request=request, name="dashboard.html", context={})
+
+
+@app.get("/api/pulse")
+def pulse():
+    """Polled every 4s. Fingerprint changes the moment a new ledger row lands."""
+    t0 = time.time()
+    try:
+        res = client.query(f"""
+            SELECT count()                AS total_rows,
+                   uniqExact(run_id)      AS runs,
+                   uniqExact(trace_id)    AS traces,
+                   max(created_at)        AS latest
+            FROM {LEDGER}""")
+        total, runs, traces, latest = res.result_rows[0]
+        log_event("/api/pulse", "", "success", "clickhouse",
+                  int((time.time() - t0) * 1000), rows=1)
+        return {"total_rows": total, "runs": runs, "traces": traces,
+                "latest": str(latest), "fingerprint": f"{total}:{runs}:{latest}"}
+    except Exception as e:
+        log_event("/api/pulse", "", "failure", "clickhouse",
+                  int((time.time() - t0) * 1000), error=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/incidents")
+def incidents(only_anomalies: bool = True, limit: int = 100):
+    """One horizontal record per run_id. The FINAL row decides the verdict."""
+    t0 = time.time()
+    sql = f"""
+        SELECT
+            toString(run_id)                                                AS run_id,
+            toString(any(trace_id))                                         AS trace_id,
+            min(incident_start)                                             AS incident_start,
+            max(incident_end)                                               AS incident_end,
+            count()                                                         AS steps,
+
+            argMaxIf(verdict,          step_order, step_type='final')       AS verdict,
+            argMaxIf(metric,           step_order, step_type='final')       AS metric,
+            argMaxIf(dimension,        step_order, step_type='final')       AS dimension,
+            argMaxIf(segment,          step_order, step_type='final')       AS segment,
+            argMaxIf(observed_value,   step_order, step_type='final')       AS observed,
+            argMaxIf(expected_value,   step_order, step_type='final')       AS expected,
+            argMaxIf(delta_value,      step_order, step_type='final')       AS delta,
+            argMaxIf(contribution_pct, step_order, step_type='final')       AS confidence,
+            argMaxIf(rationale,        step_order, step_type='final')       AS final_rationale,
+
+            argMaxIf(metric,           contribution_pct,
+                     verdict='anomaly' AND step_type IN ('localization','decomposition'))  AS driver_metric,
+            argMaxIf(dimension,        contribution_pct,
+                     verdict='anomaly' AND step_type IN ('localization','decomposition'))  AS driver_dimension,
+            argMaxIf(segment,          contribution_pct,
+                     verdict='anomaly' AND step_type IN ('localization','decomposition'))  AS driver_segment,
+            maxIf(contribution_pct,
+                     verdict='anomaly' AND step_type IN ('localization','decomposition'))  AS driver_contribution,
+
+            arrayDistinct(groupArrayIf(metric, step_type='ruleout'))         AS ruled_out,
+            countIf(verdict='anomaly')                                       AS anomaly_steps,
+            max(created_at)                                                  AS written_at
+        FROM {LEDGER}
+        GROUP BY run_id
+        {"HAVING verdict = 'anomaly'" if only_anomalies else ""}
+        ORDER BY written_at DESC
+        LIMIT {{limit:UInt32}}"""
+    try:
+        res = client.query(sql, parameters={"limit": limit})
+        data = rows_to_dicts(res)
+        for d in data:
+            for k in ("incident_start", "incident_end", "written_at"):
+                d[k] = str(d[k])
+            d["change_pct"] = (round((d["observed"] - d["expected"])
+                                     / abs(d["expected"]) * 100, 1)
+                               if d["expected"] else None)
+            d["trace_url"] = f"{LANGFUSE_HOST}/trace/{d['trace_id']}" if d["trace_id"] else ""
+        log_event("/api/incidents", "", "success", "clickhouse",
+                  int((time.time() - t0) * 1000), rows=len(data))
+        return {"incidents": data, "only_anomalies": only_anomalies}
+    except Exception as e:
+        log_event("/api/incidents", "", "failure", "clickhouse",
+                  int((time.time() - t0) * 1000), error=str(e))
+        return JSONResponse({"error": str(e), "trace": traceback.format_exc()[-800:]},
+                            status_code=500)
+
+
+@app.get("/api/run/{run_id}")
+def run_detail(run_id: str, force: bool = False):
+    """Step chain + narrated diagnosis for one run. Fully traced in Langfuse."""
+    t0 = time.time()
+    app_trace_id = ""
+
+    with propagate_attributes(session_id=run_id, tags=["rca-ledger"]):
+        with langfuse.start_as_current_observation(
+                as_type="span", name="rca-run-detail") as root:
+            root.update(input={"run_id": run_id, "force": force})
+            try:
+                app_trace_id = langfuse.get_current_trace_id() or ""
+            except Exception:
+                pass
+
+            with langfuse.start_as_current_observation(
+                    as_type="span", name="clickhouse-fetch-ledger") as fetch:
+                q = (f"SELECT * FROM {LEDGER} WHERE run_id = toUUID({{run_id:String}}) "
+                     f"ORDER BY step_order")
+                fetch.update(input={"sql": q, "table": LEDGER})
+                try:
+                    res = client.query(q, parameters={"run_id": run_id})
+                    steps = rows_to_dicts(res)
+                    fetch.update(output={"rows": len(steps),
+                                         "columns": res.column_names})
+                except Exception as e:
+                    fetch.update(output={"error": str(e)}, level="ERROR",
+                                 status_message=str(e))
+                    log_event("/api/run", run_id, "failure", "clickhouse",
+                              int((time.time() - t0) * 1000), error=str(e),
+                              trace_id=app_trace_id)
+                    return JSONResponse({"error": str(e)}, status_code=500)
+
+            if not steps:
+                log_event("/api/run", run_id, "failure", "clickhouse",
+                          int((time.time() - t0) * 1000), error="not found",
+                          trace_id=app_trace_id)
+                return JSONResponse({"error": f"No ledger rows for {run_id}"},
+                                    status_code=404)
+
+            for s in steps:
+                for k, v in list(s.items()):
+                    if k in ("run_id", "trace_id"):
+                        s[k] = str(v)
+                    elif k in ("incident_start", "incident_end", "created_at"):
+                        s[k] = str(v)
+
+            final = next((s for s in steps if s["step_type"] == "final"), steps[-1])
+            diag = narrate(steps, force=force)
+
+            latency = int((time.time() - t0) * 1000)
+            ok = diag["ok"] is not False
+
+            # trace-level context: what judges actually read in Langfuse
+            try:
+                langfuse.update_current_trace(
+                    name=f"rca:{final['metric']}:{final['verdict']}",
+                    session_id=str(final.get("trace_id") or run_id),
+                    tags=["rca-ledger", f"verdict:{final['verdict']}",
+                          f"metric:{final['metric']}",
+                          f"dimension:{final['dimension']}"],
+                    metadata={"run_id": run_id,
+                              "ledger_trace_id": str(final.get("trace_id") or ""),
+                              "steps": len(steps),
+                              "incident_start": steps[0]["incident_start"],
+                              "incident_end": steps[0]["incident_end"],
+                              "cached": diag["cached"],
+                              "llm_attempts": diag["attempts"]},
+                    input={"run_id": run_id, "steps": len(steps)},
+                    output={"verdict": final["verdict"], "diagnosis": diag["text"]})
+            except Exception:
+                pass
+
+            lf_score("run-latency-ms", float(latency))
+            lf_score("narration-cache-hit", 1.0 if diag["cached"] else 0.0)
+
+            root.update(output={"verdict": final["verdict"],
+                                "diagnosis": diag["text"],
+                                "grounding": diag["grounding"]})
+
+    log_event("/api/run", run_id, "success" if ok else "failure",
+              "cache_hit" if diag["cached"] else "llm", latency,
+              rows=len(steps), error=diag["error"] or "", trace_id=app_trace_id)
+
+    ledger_trace = str(final.get("trace_id") or "")
+    return {
+        "run_id": run_id,
+        "verdict": final["verdict"],
+        "steps": steps,
+        "diagnosis": diag,
+        "ledger_trace_id": ledger_trace,
+        "ledger_trace_url": f"{LANGFUSE_HOST}/trace/{ledger_trace}" if ledger_trace else "",
+        "app_trace_id": app_trace_id,
+        "model": MODEL,
+        "latency_ms": latency,
     }
-    FP = p.fingerprint;
-  }catch(e){ $('#pulse').innerHTML = `<span class="bad">clickhouse unreachable — ${esc(e.message)}</span>`; }
-}
 
-function setFilter(only){
-  ONLY_ANOM = only;
-  $('#bAnom').classList.toggle('on', only);
-  $('#bAll').classList.toggle('on', !only);
-  load(false);
-}
 
-async function load(highlight){
-  const r = await (await fetch(`/api/incidents?only_anomalies=${ONLY_ANOM}`)).json();
-  if(r.error){ $('#list').innerHTML = `<div class="err">${esc(r.error)}</div>`; return; }
-  const seen = new Set([...document.querySelectorAll('.rec')].map(e=>e.dataset.id));
+@app.get("/api/health")
+def health(hours: int = 24):
+    try:
+        res = client.query(f"""
+            SELECT count()                                                       AS calls,
+                   countIf(status='success')                                     AS ok,
+                   countIf(status='failure')                                     AS failed,
+                   round(100*countIf(status='success')/greatest(count(),1), 1)    AS success_rate,
+                   round(quantile(0.95)(latency_ms))                             AS p95_ms,
+                   countIf(stage='llm')                                          AS llm_calls,
+                   countIf(stage='cache_hit')                                    AS cache_hits
+            FROM {EVENTS_TABLE}
+            WHERE ts > now() - INTERVAL {{h:UInt32}} HOUR""", parameters={"h": hours})
+        kpi = dict(zip(res.column_names, res.result_rows[0]))
 
-  $('#count').textContent = ONLY_ANOM
-    ? `${r.incidents.length} confirmed anomal${r.incidents.length===1?'y':'ies'}`
-    : `${r.incidents.length} investigation${r.incidents.length===1?'':'s'}`;
+        recent = client.query(f"""
+            SELECT toString(ts) AS ts, endpoint, status, stage, latency_ms, error
+            FROM {EVENTS_TABLE}
+            WHERE ts > now() - INTERVAL {{h:UInt32}} HOUR
+            ORDER BY ts DESC LIMIT 20""", parameters={"h": hours})
 
-  $('#list').innerHTML = r.incidents.map(x =>
-    record(x, highlight && !seen.has(x.run_id))).join('')
-    || `<div class="empty">${ONLY_ANOM
-        ? 'No confirmed anomalies.<br>Every investigation was cleared or inconclusive.'
-        : 'Ledger is empty.'}</div>`;
+        return {"kpi": kpi, "recent": rows_to_dicts(recent)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
-  r.incidents.forEach(x => { if(OPEN.has(x.run_id)) expand(x.run_id, true); });
-  r.incidents.forEach(x => fetchDiagnosis(x.run_id));
-}
 
-function record(x, fresh){
-  const dir = x.change_pct < 0 ? 'down' : x.change_pct > 0 ? 'up' : 'flat';
-  const where = x.driver_segment && x.driver_segment !== 'all'
-    ? `${x.driver_dimension}=${x.driver_segment}`
-    : (x.segment && x.segment !== 'all' ? `${x.dimension}=${x.segment}` : 'global');
-  return `
-  <div class="rec ${x.verdict}${fresh?' fresh':''}" data-id="${x.run_id}">
-    <div class="row" onclick="toggle('${x.run_id}')">
-      <div class="cell"><div class="k">window</div>
-        <div class="v">${day(x.incident_start)}</div></div>
-      <div class="cell"><div class="k">metric</div>
-        <div class="v">${esc(x.metric)}</div></div>
-      <div class="cell"><div class="k">observed</div>
-        <div class="v">${fmt(x.observed, x.metric)}</div></div>
-      <div class="cell"><div class="k">expected</div>
-        <div class="v">${fmt(x.expected, x.metric)}</div></div>
-      <div class="cell"><div class="k">change</div>
-        <div class="v ${dir}">${x.change_pct===null?'—':x.change_pct.toFixed(1)+'%'}</div></div>
-      <div class="cell"><div class="k">localised to</div>
-        <div class="v">${esc(where)}</div></div>
-      <div class="cell"><div class="k">verdict</div>
-        <div class="v"><span class="badge ${x.verdict}">${esc(x.verdict.replace('_',' '))}</span></div></div>
-      <div class="cell wide"><div class="k">diagnosis</div>
-        <div class="v pending" id="dx-${x.run_id}">narrating&hellip;</div></div>
-      <div class="caret">&#8964;</div>
-    </div>
-    <div class="drawer" id="dw-${x.run_id}">
-      <div class="empty">opening&hellip;</div>
-    </div>
-  </div>`;
-}
-
-async function fetchDiagnosis(id){
-  if(LOADED[id]) { paint(id, LOADED[id]); return; }
-  try{
-    const d = await (await fetch(`/api/run/${id}`)).json();
-    if(d.error) throw new Error(d.error);
-    LOADED[id] = d; paint(id, d);
-  }catch(e){
-    const el = document.getElementById('dx-' + id);
-    if(el){ el.className = 'v pending'; el.textContent = 'narration unavailable'; }
-  }
-}
-
-function paint(id, d){
-  const el = document.getElementById('dx-' + id);
-  if(el){
-    const t = (d.diagnosis && d.diagnosis.text) || d.steps.find(s=>s.step_type==='final')?.rationale;
-    el.className = 'v'; el.textContent = t || '—';
-  }
-  const dw = document.getElementById('dw-' + id);
-  if(dw) dw.innerHTML = drawer(d);
-}
-
-function drawer(d){
-  const g = d.diagnosis && d.diagnosis.grounding;
-  const rows = d.steps.map(s => `
-    <tr class="${s.verdict}">
-      <td>${s.step_order}</td>
-      <td class="step">${esc(s.step_name)}</td>
-      <td>${esc(s.step_type)}</td>
-      <td>${esc(s.metric)}</td>
-      <td>${esc(s.dimension)}=${esc(s.segment)}</td>
-      <td>${fmt(s.expected, s.metric)} &rarr; ${fmt(s.observed, s.metric)}</td>
-      <td><span class="bar"><i style="width:${Math.min(100,Math.abs(s.contribution_pct||0))}%"></i></span>${nf(s.contribution_pct,0)}%</td>
-      <td><span class="badge ${s.verdict}">${esc(String(s.verdict).replace('_',' '))}</span></td>
-      <td class="why">${esc(s.rationale)}</td>
-    </tr>`).join('');
-
-  return `<h4>Investigation chain &middot; ${d.steps.length} steps</h4>
-    <table class="chain">
-      <tr><th>#</th><th>step</th><th>type</th><th>metric</th><th>scope</th>
-          <th>expected &rarr; observed</th><th>contribution</th><th>verdict</th><th>rationale</th></tr>
-      ${rows}
-    </table>
-    <div class="foot">
-      <span>&#9201; ${(d.latency_ms/1000).toFixed(1)}s</span>
-      <span>&#9889; ${d.diagnosis.cached ? 'cached narration' : esc(d.model)}</span>
-      ${g ? `<span class="${g.unverified.length?'unverified':'verified'}">
-        ${g.unverified.length ? '&#9888; '+g.unverified.length+' of '+g.total+' numbers unverified'
-                              : '&#10003; '+g.total+' numbers, all verified'}</span>` : ''}
-      ${d.ledger_trace_url ? `<a href="${d.ledger_trace_url}" target="_blank" rel="noopener">
-        &#8599; langfuse trace ${d.ledger_trace_id.slice(0,8)}</a>` : ''}
-      <span>run ${d.run_id.slice(0,8)}</span>
-    </div>`;
-}
-
-function toggle(id){
-  const rec = document.querySelector(`.rec[data-id="${id}"]`);
-  const open = rec.classList.toggle('open');
-  open ? OPEN.add(id) : OPEN.delete(id);
-  if(open && !LOADED[id]) fetchDiagnosis(id);
-}
-function expand(id, silent){
-  const rec = document.querySelector(`.rec[data-id="${id}"]`);
-  if(rec) rec.classList.add('open');
-}
-
-async function health(){
-  const h = await (await fetch('/api/health')).json();
-  if(h.error) return;
-  const k = h.kpi;
-  $('#kpis').innerHTML = [
-    ['calls 24h', k.calls, ''],
-    ['success', k.ok, 'ok'],
-    ['failure', k.failed, k.failed>0?'bad':''],
-    ['success rate', k.success_rate+'<small>%</small>', k.success_rate>=95?'ok':'warn'],
-    ['p95', k.p95_ms+'<small>ms</small>', ''],
-    ['llm calls', k.llm_calls, ''],
-    ['cache hits', k.cache_hits, 'ok'],
-  ].map(([a,b,c])=>`<div class="kpi"><div class="k">${a}</div><div class="v ${c}">${b}</div></div>`).join('');
-
-  $('#hbox').innerHTML = `<table><tr><th>time</th><th>endpoint</th><th>status</th>
-    <th>stage</th><th>ms</th><th>error</th></tr>` +
-    h.recent.map(r=>`<tr><td>${r.ts.slice(11,19)}</td><td>${esc(r.endpoint)}</td>
-      <td class="s-${r.status}">${esc(r.status)}</td><td>${esc(r.stage)}</td>
-      <td>${r.latency_ms}</td><td>${esc(r.error)||'—'}</td></tr>`).join('') + `</table>`;
-}
-
-pulse(); load(false); health();
-setInterval(pulse, 4000);
-setInterval(health, 20000);
-</script>
-</body>
-</html>
+@app.get("/api/verdicts")
+def verdicts():
+    """Outcome split across the ledger, judged by the final row of each run."""
+    try:
+        res = client.query(f"""
+            SELECT verdict, count() AS runs FROM (
+                SELECT run_id, argMaxIf(verdict, step_order, step_type='final') AS verdict
+                FROM {LEDGER} GROUP BY run_id
+            ) GROUP BY verdict ORDER BY runs DESC""")
+        return {"breakdown": rows_to_dicts(res)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
