@@ -16,7 +16,7 @@ services:
       - key: CH_DB
         value: rca
       - key: AUDIT_TABLE
-        value: rca.audit_log
+        value: rca.ledger
       - key: OPENROUTER_API_KEY
         sync: false
       - key: LLM_MODEL
