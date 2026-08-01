@@ -304,21 +304,21 @@ def incidents(only_anomalies: bool = True, limit: int = 100):
             max(incident_end)                                               AS incident_end,
             count()                                                         AS steps,
 
-            argMaxIf(verdict,          step_order, step_type='final')       AS verdict,
-            argMaxIf(metric,           step_order, step_type='final')       AS metric,
-            argMaxIf(dimension,        step_order, step_type='final')       AS dimension,
-            argMaxIf(segment,          step_order, step_type='final')       AS segment,
+            argMaxIf(verdict,          step_order, step_type='final')       AS f_verdict,
+            argMaxIf(metric,           step_order, step_type='final')       AS f_metric,
+            argMaxIf(dimension,        step_order, step_type='final')       AS f_dimension,
+            argMaxIf(segment,          step_order, step_type='final')       AS f_segment,
             argMaxIf(observed_value,   step_order, step_type='final')       AS observed,
             argMaxIf(expected_value,   step_order, step_type='final')       AS expected,
             argMaxIf(delta_value,      step_order, step_type='final')       AS delta,
             argMaxIf(contribution_pct, step_order, step_type='final')       AS confidence,
             argMaxIf(rationale,        step_order, step_type='final')       AS final_rationale,
 
-            argMaxIf(metric,           contribution_pct,
+            argMaxIf(metric,    contribution_pct,
                      verdict='anomaly' AND step_type IN ('localization','decomposition'))  AS driver_metric,
-            argMaxIf(dimension,        contribution_pct,
+            argMaxIf(dimension, contribution_pct,
                      verdict='anomaly' AND step_type IN ('localization','decomposition'))  AS driver_dimension,
-            argMaxIf(segment,          contribution_pct,
+            argMaxIf(segment,   contribution_pct,
                      verdict='anomaly' AND step_type IN ('localization','decomposition'))  AS driver_segment,
             maxIf(contribution_pct,
                      verdict='anomaly' AND step_type IN ('localization','decomposition'))  AS driver_contribution,
@@ -328,13 +328,18 @@ def incidents(only_anomalies: bool = True, limit: int = 100):
             max(created_at)                                                  AS written_at
         FROM {LEDGER}
         GROUP BY run_id
-        {"HAVING verdict = 'anomaly'" if only_anomalies else ""}
+        {"HAVING f_verdict = 'anomaly'" if only_anomalies else ""}
         ORDER BY written_at DESC
         LIMIT {{limit:UInt32}}"""
     try:
         res = client.query(sql, parameters={"limit": limit})
         data = rows_to_dicts(res)
         for d in data:
+            # aliases were prefixed to avoid shadowing the source columns
+            d["verdict"] = d.pop("f_verdict")
+            d["metric"] = d.pop("f_metric")
+            d["dimension"] = d.pop("f_dimension")
+            d["segment"] = d.pop("f_segment")
             for k in ("incident_start", "incident_end", "written_at"):
                 d[k] = str(d[k])
             d["change_pct"] = (round((d["observed"] - d["expected"])
@@ -349,7 +354,6 @@ def incidents(only_anomalies: bool = True, limit: int = 100):
                   int((time.time() - t0) * 1000), error=str(e))
         return JSONResponse({"error": str(e), "trace": traceback.format_exc()[-800:]},
                             status_code=500)
-
 
 @app.get("/api/run/{run_id}")
 def run_detail(run_id: str, force: bool = False):
@@ -480,10 +484,11 @@ def verdicts():
     """Outcome split across the ledger, judged by the final row of each run."""
     try:
         res = client.query(f"""
-            SELECT verdict, count() AS runs FROM (
-                SELECT run_id, argMaxIf(verdict, step_order, step_type='final') AS verdict
+            SELECT final_verdict AS verdict, count() AS runs FROM (
+                SELECT run_id,
+                       argMaxIf(verdict, step_order, step_type='final') AS final_verdict
                 FROM {LEDGER} GROUP BY run_id
-            ) GROUP BY verdict ORDER BY runs DESC""")
+            ) GROUP BY final_verdict ORDER BY runs DESC""")
         return {"breakdown": rows_to_dicts(res)}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
