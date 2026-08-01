@@ -19,7 +19,7 @@ import clickhouse_connect
 
 load_dotenv()
 
-AUDIT_TABLE = os.environ.get("AUDIT_TABLE", "rca.audit_log")
+AUDIT_TABLE = os.environ.get("AUDIT_TABLE", "rca.ledger")
 
 COLUMNS = [
     "run_id", "batch_id", "window_start", "window_end", "step_number",
