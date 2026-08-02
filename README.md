@@ -1,117 +1,120 @@
-# inMobi — RCA Audit Trail
+# inMobi — Metric Forensics Dashboard
 
-Automated root-cause analysis, made readable. Every investigation the analyst runs
-writes a step-by-step audit trail into ClickHouse; this app turns that trail into a
-live dashboard that anyone can read, with full LLM observability behind it.
+Automated root-cause analysis, made readable. The orchestrator runs continuously,
+writing its investigation into ClickHouse as it goes. This app turns that live data
+into a dashboard anyone can follow — no SQL required.
 
-Built for Click-a-thon 2026, Data Warehousing track — team **Flux4**.
+Built for **Click-a-thon 2026**, Data Warehousing track — team Flux4.
 
 ```
-      loader / RCA agent
-             │
-             ▼
-   ClickHouse Cloud  ──────────────┐  rca.audit_log      (the reasoning chain)
-   (primary database)              │  rca.rationale_cache (plain-English cache)
-             │                     │  rca.app_events      (this app's own telemetry)
-             ▼                     │
-   FastAPI  /api/pulse  ───────────┘
-            /api/runs                     ┌──────────────┐
-            /api/run/{id} ──▶ OpenRouter ─┤ plain English │
-            /api/health                   └──────────────┘
-             │                                   │
-             ▼                                   ▼
-        Dashboard UI                        Langfuse Cloud
-   (live, auto-refreshing)            session_id = run_id, every
-                                      step and LLM call traced
+   rca_orch pipeline
+   (orchestrator writes as it runs)
+          │
+          ▼
+   ClickHouse Cloud
+   rca_orch.v_narration   ── one row per incident, fully attributed
+   rca_orch.v_ruleout     ── exclusion test results per candidate
+   rca_orch.uniformity    ── spread of the culprit across other dimensions
+   rca_orch.anomalies     ── per-day detector output
+          │
+          ▼
+   FastAPI  /api/incidents      ── all incidents, shaped for the UI
+            /api/incident/{id}  ── full detail: attribution, exclusion, lifecycle
+            /api/timeseries     ── global daily metric curves
+            /api/pulse          ── lightweight poll: incident count + health notes
+          │                              │
+          ▼                              ▼
+   Dashboard UI                   Langfuse Cloud
+   (live, auto-refreshing)        every ClickHouse fetch and LLM
+                                  generation traced end-to-end
 ```
 
 ## What it does
 
-**1. Reads the reasoning chain.** Each run in `rca.audit_log` is a numbered sequence
-of steps — detect, decompose, localize, rule out, conclude. The dashboard renders it
-as a ladder so you can follow the analyst's logic top to bottom, with the actual vs
-baseline numbers and a contribution bar on every rung.
+**Reads the pipeline as it runs.** `rca_orch.v_narration` is a view that recomputes
+every time the orchestrator writes. The dashboard polls `/api/pulse` every few seconds;
+when the incident count changes a toast fires and the list updates without a full reload.
 
-**2. Translates the jargon.** The `rationale` column is written for analysts. One LLM
-call per run rewrites all of it for a business stakeholder, and the toggle flips
-between the two. Results are cached in ClickHouse by content hash, so the second load
-costs nothing. If the LLM is down, the original text shows and the header says so.
+**Shows the full investigation.** Each incident card expands into the attribution
+waterfall (which segment, how large a share of traffic, how much of the anomaly it
+explains), the exclusion proof (remove it, does the global anomaly clear?), and the
+orchestrator's own step-by-step lifecycle trace so you can see exactly what ran and when.
 
-**3. Picks up new batches by itself.** `/api/pulse` fingerprints the table every four
-seconds. When the loader inserts a new run, a toast fires and the run appears at the
-top of the rail — no refresh. `/api/run` selects every column and maps known ones
-through an alias table, so **a column added upstream renders automatically** instead
-of breaking the page.
+**Narrates in plain English on demand.** The detail view can ask an LLM (via OpenRouter)
+to summarise the incident in three sentences for a non-technical reader. The summary is
+cached in memory so the second load is instant. If the LLM is down the raw numbers show
+instead — the page never breaks.
 
-**4. Watches itself.** Every request writes success or failure, stage, latency and
-error into `rca.app_events`. The KPI strip and health table read straight back out of
-it. The dashboard is observed by the same warehouse it serves from.
+**Includes a built-in briefing assistant.** The floating chat button in the corner opens
+a context-aware panel. It knows which incident you have selected, injects the full
+attribution data into the system prompt, and streams the response token-by-token using
+any OpenAI-compatible endpoint (OpenRouter, OpenAI, etc.). Credentials live in your
+browser's `localStorage` — nothing is proxied through the server.
 
-**5. Traces end to end.** Langfuse `session_id` is the `run_id`, so one investigation
-is one session. Child spans cover the ClickHouse fetch, the cache lookup, and the LLM
-generation with prompt, output and token counts. The Langfuse `trace_id` is stored on
-each `app_events` row, so you can go from a slow query in ClickHouse straight to the
-trace that caused it.
+**Traces everything.** Langfuse v4 wraps every ClickHouse fetch (`as_type="retriever"`),
+every LLM generation (`as_type="generation"`), and every incident detail request
+(`as_type="span"`). One incident lookup = one trace. You can follow a slow request from
+the dashboard straight to the Langfuse session that caused it.
 
 ## Setup
 
 ```bash
 git clone <your-repo-url> && cd inMobi
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env          # fill in the real values
+cp .env.example .env   # fill in the values below
+uvicorn app:app --reload --port 8000
 ```
 
-Then paste `sql/01_setup.sql` into the ClickHouse Cloud SQL console. It creates the
-cache and telemetry tables, and the audit table if you do not already have one.
+Open `http://localhost:8000`. If the orchestrator has not run yet the dashboard shows
+a "no rows" note — that is expected. It will populate as the pipeline writes.
 
-```bash
-uvicorn app:app --reload --port 8000   # http://localhost:8000
-```
-
-### Environment
+### Environment variables
 
 | Variable | What it is |
 |---|---|
-| `CH_HOST` `CH_PORT` `CH_USER` `CH_PASSWORD` | ClickHouse Cloud, port 8443, TLS on |
-| `CH_DB` `AUDIT_TABLE` | database and fully-qualified audit table name |
+| `CH_HOST` | ClickHouse Cloud hostname (e.g. `abc.ap-south-1.aws.clickhouse.cloud`) |
+| `CH_PORT` | `8443` (TLS, the default) |
+| `CH_USER` | `default` or your user |
+| `CH_PASSWORD` | your ClickHouse password |
+| `ORCH_DB` | schema where the orchestrator writes — default `rca_orch` |
+| `EVENTS_TABLE` | raw events table — default `rca.ad_events` |
 | `OPENROUTER_API_KEY` | from openrouter.ai → Keys, starts `sk-or-` |
-| `LLM_MODEL` | `openai/gpt-oss-20b:free` — free tier, reliable at structured output |
-| `LANGFUSE_PUBLIC_KEY` `LANGFUSE_SECRET_KEY` `LANGFUSE_HOST` | cloud.langfuse.com |
+| `LLM_MODEL` | model to use for narration — default `openai/gpt-oss-20b:free` |
+| `LANGFUSE_PUBLIC_KEY` | from cloud.langfuse.com → Settings |
+| `LANGFUSE_SECRET_KEY` | from cloud.langfuse.com → Settings |
+| `LANGFUSE_HOST` | `https://cloud.langfuse.com` (or self-hosted URL) |
 
 `.env` is gitignored. On Render, set the same keys under Environment.
 
-### If your column names differ
+### Setting up the briefing widget
 
-Everything reads through the `COLS` dict at the top of `app.py`. Add your name to the
-right list and the whole app follows — no other file changes.
+Click the chat button in the dashboard. The first time it asks for:
 
-## Demo
+- **API Base URL** — `https://openrouter.ai/api/v1` (or any OpenAI-compatible endpoint)
+- **API Key** — your key, starting `sk-or-`
+- **Model** — `openai/gpt-4o` or any model on OpenRouter
 
-Leave the dashboard on the projector. In a second terminal:
+These are saved to `localStorage` and never leave your browser.
 
-```bash
-python scripts/load_batch.py
-python scripts/load_batch.py --metric ctr --segment "iOS 18" --drop 0.31
-```
+## API reference
 
-The toast fires, the run lands at the top of the rail, the ladder renders, and the
-health strip counts it. Open Langfuse alongside and the matching session is already
-there.
-
-## Endpoints
-
-| Route | Purpose |
+| Route | What it returns |
 |---|---|
-| `GET /` | dashboard |
-| `GET /api/pulse` | row/run/batch counts and latest load time — the poll target |
-| `GET /api/runs` | one summary card per investigation, newest first |
-| `GET /api/run/{run_id}` | full chain, plain English, Langfuse trace id |
-| `GET /api/health` | success/failure KPIs and the last 25 calls |
-| `GET /api/verdicts` | anomaly vs normal split across the audit table |
+| `GET /` | the dashboard |
+| `GET /api/pulse` | incident count, coverage dates, revenue at risk, health notes |
+| `GET /api/incidents` | all incidents from `v_narration`, shaped for the list view |
+| `GET /api/incident/{id}` | full detail — attribution, exclusion, lifecycle, optional narration |
+| `GET /api/timeseries` | global daily curves for requests, fill rate, eCPM, revenue |
+| `GET /api/incident/{id}/timeseries` | blended + segment-level series for one incident |
+| `GET /api/diag` | connectivity check — which tables are reachable and how many rows |
+| `GET /api/health` | 24-hour success/failure KPIs from `rca.app_events` |
+| `POST /api/chat` | server-side LLM proxy (used internally; widget calls OpenRouter directly) |
 
-Add `?plain=false` to see raw rationale, `?force=true` to bypass the cache.
+Add `?fresh=true` to any incident endpoint to bypass the 25-second view cache and
+force a recompute. Add `?llm_narrate=true` to `/api/incident/{id}` to include the
+plain-English summary.
 
 ## Stack
 
-ClickHouse Cloud · FastAPI · Jinja2 · Langfuse v4 · OpenRouter · Render
+ClickHouse Cloud · FastAPI · Jinja2 · OpenRouter · Langfuse v4 · Render
